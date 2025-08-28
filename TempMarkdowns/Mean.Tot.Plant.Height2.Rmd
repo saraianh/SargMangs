@@ -1,0 +1,441 @@
+---
+title: "Mean Total Plant Height — RHMA (Alive at TP1 & TP6, Prefixed IDs)"
+author: "Sarai Hutchinson"
+date: "2025-08-25"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+params:
+  # If the data frames RHMA_IntakeData and survivors_tp1_to_tp6
+  # already exist in your environment, these paths are ignored.
+  intake_path: "RHMA_IntakeData.csv"
+  monitor_path: "survivors_tp1_to_tp6.csv"
+  export_dir: "exports"
+  use_csv_if_missing: true     # if the data frames aren't present, read from CSVs above
+  target_time_period: 6        # treat this TP as the "last"; fallback to latest date if missing
+---
+
+
+* Uses in-memory data frames **`RHMA_IntakeData`** (intake) and **`survivors_tp1_to_tp6`** (monthly)
+* Filters to IDs **Alive at both TP1 & TP6**
+* Prefers **TP6** as the “last” monitoring, falls back to each ID’s latest date if TP6 is missing
+* Computes total height (substrate- and pot-referenced) and a **row-wise mean**
+* **Carries Site from the intake file** based on the original `Prop_ID`
+* **Prefixes “R” to all `Prop_ID`s** (e.g., `A2 → RA2`)
+* Summaries: **Overall**, **By Treatment**, **By Site (intake)**, **Treatment × Site** (both intake and monitoring)
+* Exports tidy CSVs
+
+Save as `mean_total_height_prefixed.Rmd` and knit.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(janitor)
+
+# Attempt to load gt; fallback to kable if not available or rlang too old
+use_gt <- FALSE
+if (requireNamespace("gt", quietly = TRUE)) {
+  if (packageVersion("rlang") >= "1.1.4") {
+    library(gt)
+    use_gt <- TRUE
+  }
+}
+
+# Helper to render table with either gt or knitr::kable
+as_table <- function(df, title = NULL) {
+  if (use_gt) {
+    out <- gt::gt(df)
+    if (!is.null(title)) out <- gt::tab_header(out, title)
+    out
+  } else {
+    if (is.null(title)) title <- ""
+    knitr::kable(df, caption = title, format = "html")
+  }
+}
+
+# Small helpers
+getn <- function(df, nm) names(df)[tolower(names(df)) == tolower(nm)][1]
+coalesce_date <- function(x) {
+  y <- suppressWarnings(ymd(x))
+  z <- ifelse(is.na(y), suppressWarnings(mdy(x)), y)
+  as_date(z)
+}
+
+# Put this under your other helpers in the setup chunk
+clean_num <- function(x) {
+  # robust numeric parsing: strips units, commas, text; returns NA on non-numeric
+  readr::parse_number(as.character(x), locale = readr::locale(decimal_mark = ".", grouping_mark = ","))
+}
+```
+
+## 1) Load data (from memory or CSV)
+
+```{r load}
+p <- params
+if (!exists("RHMA_IntakeData") || !exists("survivors_tp1_to_tp6")) {
+  stopifnot(isTRUE(p$use_csv_if_missing))
+  message("Reading CSVs because required data frames not found in workspace...")
+  RHMA_IntakeData      <- readr::read_csv(p$intake_path,  show_col_types = FALSE)
+  survivors_tp1_to_tp6 <- readr::read_csv(p$monitor_path, show_col_types = FALSE)
+}
+mon_raw <- survivors_tp1_to_tp6 %>% clean_names()
+intake_raw <- RHMA_IntakeData
+```
+
+## 2) Column checks
+
+```{r check-cols}
+req_intake <- c("Prop_ID", "Site", "Species", "Treatment", "RHMA_Height_1", "RHMA_Height_2", "Epi_Length")
+missing_intake <- setdiff(req_intake, names(intake_raw))
+if (length(missing_intake)) stop("Intake missing: ", paste(missing_intake, collapse = ", "))
+
+req_mon <- c("prop_id","species","treatment","location",
+             "rhma_height_1","rhma_height_2",
+             "date_monitored","time_period","survivorship", "rhma_epi_length")
+missing_mon <- setdiff(req_mon, names(mon_raw))
+if (length(missing_mon)) stop("Monitoring missing: ", paste(missing_mon, collapse = ", "))
+```
+
+## 3) Filter Alive at BOTH TP1 & TP6
+
+```{r alive-filter}
+alive_ids <- mon_raw %>%
+  mutate(survivorship = tolower(survivorship),
+         time_period = as.numeric(time_period)) %>%
+  filter(survivorship %in% c("alive","a"),
+         time_period %in% c(1,6)) %>%
+  distinct(prop_id, time_period) %>%
+  group_by(prop_id) %>%
+  summarise(has_tp1 = any(time_period==1),
+            has_tp6 = any(time_period==6), .groups="drop") %>%
+  filter(has_tp1 & has_tp6) %>%
+  pull(prop_id)
+```
+
+## 4) Prepare intake & monitoring
+
+# ```{r prep-data}
+# intake <- intake_raw %>%
+#   filter(Prop_ID %in% alive_ids) %>%
+#   mutate(RHMA_Height_1_Intake = as.numeric(RHMA_Height_1),
+#          RHMA_Height_2_Intake = as.numeric(RHMA_Height_2))
+# 
+# mon_prepped <- mon_raw %>%
+#   mutate(time_period = as.numeric(time_period),
+#          monitor_date = coalesce_date(date_monitored),
+#          rhma_height_1 = as.numeric(rhma_height_1),
+#          rhma_height_2 = as.numeric(rhma_height_2)) %>%
+#   filter(prop_id %in% alive_ids)
+# 
+# mon_tp <- mon_prepped %>% filter(time_period == params$target_time_period)
+# ids_with_tp <- unique(mon_tp$prop_id)
+# mon_fallback <- mon_prepped %>%
+#   filter(!prop_id %in% ids_with_tp) %>%
+#   arrange(prop_id, monitor_date) %>%
+#   group_by(prop_id) %>% slice_tail(n=1) %>% ungroup()
+# monitor_last <- bind_rows(mon_tp, mon_fallback) %>% distinct(prop_id, .keep_all=TRUE)
+# ```
+This is the secondary option of code
+```{r prep-data}
+intake <- intake_raw %>%
+  filter(Prop_ID %in% alive_ids) %>%
+  mutate(
+    RHMA_Height_1_Intake = clean_num(RHMA_Height_1),
+    RHMA_Height_2_Intake = clean_num(RHMA_Height_2),
+    Epi_Length           = clean_num(if ("Epi_Length" %in% names(.)) Epi_Length else NA_real_)
+  )
+
+mon_prepped <- mon_raw %>%
+  mutate(
+    time_period     = as.numeric(time_period),
+    monitor_date    = coalesce_date(date_monitored),
+    rhma_height_1   = clean_num(rhma_height_1),
+    rhma_height_2   = clean_num(rhma_height_2),
+    rhma_epi_length = clean_num(if ("rhma_epi_length" %in% names(.)) rhma_epi_length else NA_real_)
+  ) %>%
+  filter(prop_id %in% alive_ids)
+
+mon_tp <- mon_prepped %>% filter(time_period == params$target_time_period)
+ids_with_tp <- unique(mon_tp$prop_id)
+
+mon_fallback <- mon_prepped %>%
+  filter(!prop_id %in% ids_with_tp) %>%
+  arrange(prop_id, monitor_date) %>%
+  group_by(prop_id) %>% slice_tail(n = 1) %>% ungroup()
+
+monitor_last <- bind_rows(mon_tp, mon_fallback) %>%
+  distinct(prop_id, .keep_all = TRUE)
+```
+
+
+```{r diagnostics, echo=FALSE}
+# Which monitoring rows failed to parse?
+bad_mon <- mon_prepped %>%
+  filter(is.na(rhma_height_1) | is.na(rhma_height_2)) %>%
+  select(prop_id, time_period, date_monitored, rhma_height_1, rhma_height_2, rhma_epi_length) %>%
+  distinct()
+
+# Which intake rows failed to parse?
+bad_intake <- intake %>%
+  filter(is.na(RHMA_Height_1_Intake) | is.na(RHMA_Height_2_Intake)) %>%
+  select(Prop_ID, Site, RHMA_Height_1, RHMA_Height_1_Intake, RHMA_Height_2, RHMA_Height_2_Intake)
+
+as_table(dplyr::tibble(
+  metric = c("bad_mon_rows", "bad_intake_rows"),
+  n      = c(nrow(bad_mon), nrow(bad_intake))
+), "Parsing diagnostics (rows with NAs after parsing)")
+
+if (nrow(bad_mon))  as_table(head(bad_mon, 20),  "Sample of monitoring rows with NA heights")
+if (nrow(bad_intake)) as_table(head(bad_intake, 20), "Sample of intake rows with NA heights")
+```
+
+## 5) Compute results (Site from intake, prefix IDs)
+
+```{r compute2}
+# Assumes:
+# - Intake: RHMA_Height_1_Intake, RHMA_Height_2_Intake, Epi_Length (already numeric)
+# - Monitoring (clean_names): rhma_height_1, rhma_height_2, rhma_epi_length (already numeric)
+
+results2 <- intake %>%
+  select(Prop_ID, Site, Species, Treatment,
+         RHMA_Height_1_Intake, RHMA_Height_2_Intake, Epi_Length) %>%
+  left_join(monitor_last %>% rename(Prop_ID = prop_id), by = "Prop_ID") %>%
+  mutate(
+    Prop_ID_prefixed = paste0("R", Prop_ID),
+
+    # Total heights (intake vs monitoring), using epi lengths exactly as provided
+    total_intake_height_1 = RHMA_Height_1_Intake + Epi_Length,
+    total_intake_height_2 = RHMA_Height_2_Intake + Epi_Length,
+    total_mon_height_1    = rhma_height_1 + rhma_epi_length,
+    total_mon_height_2    = rhma_height_2 + rhma_epi_length,
+
+    # Deltas
+    total_height_substrate_cm = total_mon_height_1 - total_intake_height_1,
+    total_height_pot_cm       = total_mon_height_2 - total_intake_height_2,
+    total_height_mean_cm      = {
+      m <- cbind(total_height_substrate_cm, total_height_pot_cm)
+      x <- rowMeans(m, na.rm = TRUE)
+      ifelse(is.nan(x), NA_real_, x)
+    },
+
+    # Prefer monitoring metadata when present
+    Treatment    = coalesce(treatment, Treatment),
+    Species      = coalesce(species,   Species),
+    Location_Mon = location,
+    Monitor_Date = monitor_date,
+    Time_Period  = time_period
+  ) %>%
+  relocate(Prop_ID_prefixed, Prop_ID, Species, Site, Location_Mon, Treatment,
+           Monitor_Date, Time_Period, starts_with("total_height_"))
+```
+
+
+```{r qc-na-check, echo=FALSE}
+na_cols <- c("total_intake_height_1","total_intake_height_2",
+             "total_mon_height_1","total_mon_height_2",
+             "total_height_substrate_cm","total_height_pot_cm","total_height_mean_cm")
+colSums(is.na(results2[na_cols]))
+```
+
+
+```{r compute}
+results <- intake %>%
+  select(Prop_ID, Site, Species, Treatment, RHMA_Height_1_Intake, RHMA_Height_2_Intake, Epi_Length) %>%
+  left_join(monitor_last %>% rename(Prop_ID = prop_id), by="Prop_ID") %>%
+  mutate(Prop_ID_prefixed = paste0("R", Prop_ID),
+         total_intake_height_1 = RHMA_Height_1_Intake + Epi_Length,
+         total_intake_height_2 = RHMA_Height_2_Intake + Epi_Length,
+         total_mon_height_1 = rhma_height_1 + rhma_epi_length,
+         total_mon_height_2 = rhma_height_2 + rhma_epi_length,
+         total_height_substrate_cm = total_mon_height_1 - total_intake_height_1,
+         total_height_pot_cm = total_mon_height_2 - total_intake_height_2,
+         total_height_mean_cm = {
+           m <- cbind(total_height_substrate_cm,total_height_pot_cm)
+           x <- rowMeans(m, na.rm=TRUE)
+           ifelse(is.nan(x), NA_real_, x)
+         },
+         Treatment = coalesce(treatment, Treatment),
+         Species = coalesce(species, Species),
+         Location_Mon = location,
+         Monitor_Date = monitor_date,
+         Time_Period = time_period) %>%
+  relocate(Prop_ID_prefixed, Prop_ID, Species, Site, Location_Mon, Treatment,
+           Monitor_Date, Time_Period, starts_with("total_height_"))
+```
+
+## 6) Summaries (Overall, by Treatment & Site)
+
+```{r summaries}
+fmt_mean <- \(x) mean(x, na.rm = TRUE)
+
+overall <- results %>%
+  summarise(n = sum(!is.na(total_height_mean_cm)),
+            mean_total_height_cm = fmt_mean(total_height_mean_cm),
+            mean_substrate_cm = fmt_mean(total_height_substrate_cm),
+            mean_pot_cm = fmt_mean(total_height_pot_cm))
+
+by_treatment <- results %>%
+  group_by(Treatment) %>%
+  summarise(n = sum(!is.na(total_height_mean_cm)),
+            mean_total_height_cm = fmt_mean(total_height_mean_cm),
+            mean_substrate_cm = fmt_mean(total_height_substrate_cm),
+            mean_pot_cm = fmt_mean(total_height_pot_cm), .groups="drop")
+
+by_site <- results %>%
+  group_by(Site) %>%
+  summarise(n = sum(!is.na(total_height_mean_cm)),
+            mean_total_height_cm = fmt_mean(total_height_mean_cm),
+            mean_substrate_cm = fmt_mean(total_height_substrate_cm),
+            mean_pot_cm = fmt_mean(total_height_pot_cm), .groups="drop")
+
+# Display with gt or kable fallback
+as_table(overall, "Overall — Mean Total Height (cm)")
+as_table(by_treatment, "By Treatment — Mean Total Height (cm)")
+as_table(by_site, "By Site (Intake) — Mean Total Height (cm)")
+```
+
+## 7) (Optional) QC Plot
+
+<!-- ```{r plots, fig.width=7, fig.height=4} -->
+<!-- results %>% -->
+<!--   pivot_longer(starts_with("total_height_"), names_to="metric", values_to="cm") %>% -->
+<!--   mutate(metric = recode(metric, -->
+<!--                          total_height_substrate_cm="Above Substrate", -->
+<!--                          total_height_pot_cm="Above Pot", -->
+<!--                          total_height_mean_cm="Row Mean")) %>% -->
+<!--   ggplot(aes(x=cm)) + geom_histogram(bins=30) + -->
+<!--   facet_wrap(~metric, scales="free_y") + -->
+<!--   labs(x="Height (cm)", y="Count", -->
+<!--        title="Total Height Metrics — Alive at TP1 & TP6 (Prefixed IDs)") -->
+<!-- ``` -->
+
+That error happens when the faceting column (`metric`) ends up with **no non-missing values**—usually because:
+
+* `pivot_longer()` didn’t find any `starts_with("total_height_")` columns, or
+* `recode()` turned everything into `NA` (because some metric names weren’t listed and no `.default` was set).
+
+Try this robust version:
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# The exact metric columns you want to plot
+wanted <- c("total_height_substrate_cm",
+            "total_height_pot_cm",
+            "total_height_mean_cm")
+
+# Pivot only existing columns, drop NAs, and recode safely
+plot_data <- results %>%
+  pivot_longer(
+    cols = any_of(wanted),
+    names_to = "metric",
+    values_to = "cm",
+    values_drop_na = TRUE
+  ) %>%
+  mutate(
+    metric = recode(
+      metric,
+      "total_height_substrate_cm" = "Above Substrate",
+      "total_height_pot_cm"       = "Above Pot",
+      "total_height_mean_cm"      = "Row Mean",
+      .default = metric   # <- prevents NAs if other names sneak in
+    )
+  )
+
+if (nrow(plot_data) == 0) {
+  message("No data to plot for the selected height metrics.")
+} else {
+  ggplot(plot_data, aes(x = cm)) +
+    geom_histogram(bins = 30) +
+    facet_wrap(~ metric, scales = "free_y", drop = FALSE) +  # keep empty facets if any
+    labs(
+      x = "Height (cm)", y = "Count",
+      title = "Total Height Metrics — Alive at TP1 & TP6 (Prefixed IDs)"
+    )
+}
+```
+
+Quick sanity check (optional) to see which metrics actually have data:
+
+```{r}
+results %>%
+  summarise(across(any_of(wanted), ~sum(!is.na(.x)))) %>%
+  tidyr::pivot_longer(everything(), names_to="metric", values_to="non_NA_count")
+```
+
+If `non_NA_count` is all zeros, your earlier filters produced an empty `results`. In that case, relax the filters or verify those three `wanted` columns exist in `results` (spelling matters).
+
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Try to pick an ID column if one exists; adjust the coalesce() order to your columns
+results_with_id <- results %>%
+  mutate(.id = coalesce(!!!rlang::syms(c("Prop_ID"))))
+
+outliers_tbl <- results_with_id %>%
+  pivot_longer(starts_with("total_height_"), names_to="metric", values_to="cm") %>%
+  mutate(metric = recode(metric,
+                         total_height_substrate_cm="Above Substrate",
+                         total_height_pot_cm="Above Pot",
+                         total_height_mean_cm="Row Mean")) %>%
+  filter(!is.na(cm)) %>%
+  group_by(metric) %>%
+  mutate(Q1 = quantile(cm, 0.25, na.rm = TRUE),
+         Q3 = quantile(cm, 0.75, na.rm = TRUE),
+         IQR = Q3 - Q1,
+         lower = Q1 - 1.5*IQR,
+         upper = Q3 + 1.5*IQR,
+         is_outlier = cm < lower | cm > upper) %>%
+  ungroup() %>%
+  filter(is_outlier) %>%
+  arrange(metric, desc(cm))  # largest high outliers first
+
+# See the outliers (add columns you care about)
+outliers_tbl %>%
+  select(metric, .id, cm, lower, upper) %>%
+  print(n = Inf)
+```
+
+
+## 8) Export CSVs
+
+```{r export, message=FALSE}
+dir.create(params$export_dir, showWarnings = FALSE)
+write_csv(results, file.path(params$export_dir, "propagule_total_heights_alive_tp1_tp6_prefixed.csv"))
+write_csv(overall, file.path(params$export_dir, "overall_mean_total_height.csv"))
+write_csv(by_treatment, file.path(params$export_dir, "mean_total_height_by_treatment.csv"))
+write_csv(by_site, file.path(params$export_dir, "mean_total_height_by_site_intake.csv"))
+```
+
+
+Create a list that has a number of trees alive at each time point. the aim is to see if the number of trees at each timepoint change.
+
+```{r check-alives}
+mon_alives <- mon_prepped %>%
+  group_by(prop_id, time_period)
+```
+
+
+
+---
+
+### Notes
+
+* **Site mapping:** `Site` is taken directly from the **intake** file and retained in `results`, ensuring the site is tied to the original `Prop_ID`.
+* **Prefixed IDs:** Use `Prop_ID_prefixed` anywhere you want the `R`-prefixed form (e.g., in exports, labels).
+* **Alive filter:** Accepts `"Alive"` or `"A"` (case-insensitive). Add to the vector if you use additional codes.
+* **Fallback logic:** If any surviving ID lacks TP6, the script uses that ID’s **latest** monitoring date instead.
+
+### What this does:
+
+* **Prefixed IDs:** `Prop_ID_prefixed` has `R` + original ID.
+* **Fallback for tables:** Uses `gt` if available and `rlang >= 1.1.4`. Else falls back to `knitr::kable`.
+* You can update `rlang` later (`install.packages("rlang")`) and restart R to re-enable `gt` without modifying the Rmd.
+
+Now you can knit immediately without error.
