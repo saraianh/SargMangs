@@ -1,0 +1,1229 @@
+---
+title: "Alive Survivorship Over Time (Replicate-Level)"
+author: "Sarai Hutchinson"
+date: "2025-08-26"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: false
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(viridis)
+
+# Color palettes
+okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7")
+viridis_palette <- viridis(8)
+
+# Read data
+ALLDATA <- read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/Hutchinson_MonthlyMonitoring-MASTER3.csv")
+
+# Inspect structure (optional)
+# str(ALLDATA)
+
+# Clean treatment labels (ordered for legend)
+ALLDATA <- ALLDATA %>%
+  mutate(
+    Treatment_Name = case_when(
+      Treatment == "A" ~ "Soil",
+      Treatment == "B" ~ "Crushed glass (CG)",
+      Treatment == "C" ~ "Sargassum only (SG)",
+      Treatment == "D" ~ "3:1 CG to SG",
+      Treatment == "E" ~ "1:3 CG to SG",
+      TRUE ~ as.character(Treatment)
+    ),
+    Treatment_Name = factor(
+      Treatment_Name,
+      levels = c("Soil", "Crushed glass (CG)", "Sargassum only (SG)", "1:3 CG to SG", "3:1 CG to SG")
+    )
+  )
+```
+
+
+## Creating list with the ALLDATA at tp1 and tp6
+```{r}
+
+# Step 1: Filter to Alive plants in Time_Period 1 or 6
+alive_tp1_6 <- ALLDATA %>%
+  filter(Time_Period %in% c(1, 6), Survivorship == "A")
+
+
+unique(ALLDATA$Time_Period)
+unique(ALLDATA$Survivorship)
+
+
+# Step 2: Keep only Prop_IDs that are alive in BOTH time periods
+survived_both <- alive_tp1_6 %>%
+  group_by(Prop_ID) %>%
+  filter(n_distinct(Time_Period) == 2) %>%  # Ensures alive in both 1 and 6
+  ungroup()
+
+# Step 3: Create separate lists for RHMA and LARA
+RHMA_survivors <- survived_both %>%
+  filter(Species == "RHMA") %>%
+  select(Prop_ID) %>%
+  distinct()
+
+LARA_survivors <- survived_both %>%
+  filter(Species == "LARA") %>%
+  select(Prop_ID) %>%
+  distinct()
+
+# Step 4 (optional): If you want to save or view them in one long dataframe with a species label
+final_long_list <- bind_rows(
+  RHMA_survivors %>% mutate(Species = "RHMA"),
+  LARA_survivors %>% mutate(Species = "LARA")
+)
+
+# View final output
+print(final_long_list)
+
+##This part gives me a list with both instead of separated.
+
+# Step 1: Filter to Alive plants in Time_Period 1 or 6
+alive_tp1_6 <- ALLDATA %>%
+  filter(Time_Period %in% c(1, 6), Survivorship == "A")
+
+# Step 2: Identify Prop_IDs that survived both TP 1 AND TP 6
+survivor_ids <- alive_tp1_6 %>%
+  group_by(Prop_ID) %>%
+  filter(n_distinct(Time_Period) == 2) %>%
+  pull(Prop_ID) %>%
+  unique()
+
+# Step 3: Pull all rows (all time periods) for just those Prop_IDs
+survivor_full_history <- ALLDATA %>%
+  filter(Prop_ID %in% survivor_ids)
+
+# View or use
+print(survivor_full_history)
+
+# Export the full dataset of ALLDATA (all time periods) to CSV
+write.csv(survivor_full_history, "survivors_tp1_to_tp6.csv", row.names = FALSE)
+```
+
+
+
+
+## Method
+
+We calculate **percent Alive per replicate** at each monitoring period, then visualize the replicate trajectories over time. Alive is coded as `"A"` (DY and D are not counted as alive here).
+
+```{r compute-replicate-alive, message=FALSE, warning=FALSE}
+# Replicate-level % Alive (A only)
+rep_alive <- ALLDATA %>%
+  group_by(Species, Treatment_Name, Replicate, Time_Period) %>%
+  summarise(
+    alive_n = sum(Survivorship == "A", na.rm = TRUE),
+    total_n = n(),
+    alive_pct = (alive_n / total_n) * 100,
+    .groups = "drop"
+  )
+
+# Order/label Time_Period for plotting
+if (is.character(rep_alive$Time_Period)) {
+  maybe_num <- readr::parse_number(rep_alive$Time_Period)
+  if (all(!is.na(maybe_num))) {
+    rep_alive <- rep_alive %>% mutate(Time_Period_num = maybe_num)
+  } else {
+    rep_alive <- rep_alive %>%
+      mutate(Time_Period_num = as.numeric(factor(Time_Period, levels = unique(Time_Period))))
+  }
+} else {
+  rep_alive <- rep_alive %>% mutate(Time_Period_num = as.numeric(Time_Period))
+}
+
+alive_summary <- rep_alive %>%
+  dplyr::group_by(Species, Treatment_Name, Time_Period_num) %>%
+  dplyr::summarise(
+    mean_alive = mean(alive_pct, na.rm = TRUE),
+    sd_alive   = sd(alive_pct,   na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+
+```{r}
+# Replicate-level counts of ALIVE (A only)
+rep_alive_counts <- ALLDATA %>%
+  dplyr::group_by(Species, Treatment_Name, Replicate, Time_Period) %>%
+  dplyr::summarise(
+    alive_n = sum(Survivorship == "A", na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Order Time_Period for plotting
+rep_alive_counts <- rep_alive_counts %>%
+  dplyr::mutate(
+    Time_Period_num = if (is.character(Time_Period)) {
+      maybe_num <- readr::parse_number(Time_Period)
+      ifelse(is.na(maybe_num),
+             as.numeric(factor(Time_Period, levels = unique(Time_Period))),
+             maybe_num)
+    } else {
+      as.numeric(Time_Period)
+    }
+  )
+
+# Treatment MEAN counts across replicates per time point
+alive_count_summary <- rep_alive_counts %>%
+  dplyr::group_by(Species, Treatment_Name, Time_Period_num) %>%
+  dplyr::summarise(
+    mean_alive_n = mean(alive_n, na.rm = TRUE),
+    sd_alive_n   = sd(alive_n,   na.rm = TRUE),
+    n_reps       = dplyr::n(),
+    .groups = "drop"
+  )
+```
+
+
+```{r}
+##Create a dataframe with the intake information of those that survived
+
+#Import LARA and RHMA data
+LARA_Intake <- read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/LARA_IntakeData.csv")
+RHMA_Intake <- read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/RHMA_IntakeData.csv")
+
+# Step 1: Get list of Prop_IDs that survived at Time_Period 6
+survivors_tp6 <- survivor_full_history %>%
+  filter(Time_Period == 6) %>%
+  pull(Prop_ID) %>%
+  unique()
+
+print(survivors_tp6)
+
+# Step 2: Filter intake data for only those ALLDATA
+# Filter LARA intake data
+intake_lara_survivors <- LARA_Intake %>%
+  filter(Prop_ID %in% survivors_tp6)
+
+# Filter RHMA intake data
+intake_rhma_survivors <- RHMA_Intake %>%
+  filter(Prop_ID %in% survivors_tp6)
+
+# Combine both sets of ALLDATA while preserving all columns
+combined_intake_survivors <- full_join(intake_lara_survivors, intake_rhma_survivors, by = intersect(names(intake_lara_survivors), names(intake_rhma_survivors)))
+
+# Remove the Prop_ID column
+combined_intake_survivors <- combined_intake_survivors %>%
+  select(-Prop_ID)
+
+
+
+
+
+
+# # Which rows are in RHMA_survivors but not in intake_rhma_survivors
+# anti_join(RHMA_survivors, intake_rhma_survivors, by = "Prop_ID")
+
+
+##oF THOSE THAT SURVIVED, HOW MANY ARE FROM A PARTICULAR SITE if there are 3 sites for each species and 100 plants per site?
+
+# Count number of ALLDATA per site
+site_counts <- combined_intake_survivors %>%
+  group_by(Species, Site) %>%
+  summarise(
+    Num_Survived = n()
+  ) %>%
+  arrange(Species, Site)
+
+print(site_counts)
+
+site_counts <- site_counts %>%
+  mutate(Survival_Rate = Num_Survived / 100 * 100)  # Since 100 planted per site
+
+print(site_counts)
+
+
+
+
+
+
+
+
+
+#Combine ALLDATA dataframe with Site column from intake dataframes
+# Keep only Prop_ID and Site from intake files
+lara_sites <- LARA_Intake %>%
+  select(Prop_ID, Site)
+
+rhma_sites <- RHMA_Intake %>%
+  select(Prop_ID, Site)
+
+# Combine both into one Site lookup table
+site_lookup <- bind_rows(lara_sites, rhma_sites)
+
+# Add the Site column to ALLDATA by joining on Prop_ID
+ALLDATA_with_site <- ALLDATA %>%
+  left_join(site_lookup, by = "Prop_ID")
+
+# Step 1: Clean and Prepare Data
+survivors_clean2 <- ALLDATA_with_site %>%
+  mutate(
+    Surv_Bin = ifelse(Survivorship %in% c("A", "DY"), 1, 0),
+    Treatment = case_when(
+      Treatment == "A" ~ "Soil",
+      Treatment == "B" ~ "Crushed glass (CG)",
+      Treatment == "C" ~ "Sargassum only (SG)",
+      Treatment == "D" ~ "3:1 CG to SG",
+      Treatment == "E" ~ "1:3 CG to SG",
+      TRUE ~ as.character(Treatment)
+    ),
+    Treatment = factor(Treatment, levels = c("Soil", "Crushed glass (CG)", "Sargassum only (SG)", "3:1 CG to SG", "1:3 CG to SG")),
+    Time_Period = factor(Time_Period, levels = c("1", "2", "3", "4", "5", "6")),
+    Species = factor(Species)
+  )
+
+# Create dataframe for LARA
+LARA_data <- survivors_clean2 %>%
+  filter(Species == "LARA")
+
+# Create dataframe for RHMA
+RHMA_data <- survivors_clean2 %>%
+  filter(Species == "RHMA")
+
+##Doing this to see if the survival is impacted by their collection site
+# Logistic regression: Survival ~ Site
+glm_site_LARA <- glm(Surv_Bin ~ Site, data = LARA_data, family = binomial)
+summary(glm_site_LARA)
+
+glm_site_RHMA <- glm(Surv_Bin ~ Site, data = RHMA_data, family = binomial)
+summary(glm_site_RHMA)
+
+library(ggplot2)
+library(ggeffects)
+
+# Plot the predicted survival probabilities with CI for LARA
+lara_pred <- ggpredict(glm_site_LARA, terms = "Site")
+plot(lara_pred) + 
+  ggtitle("LARA: Survival Probability by Site") +
+  ylab("Predicted Probability of Survival")
+
+# Predicted survival probabilities with CI for RHMA
+rhma_pred <- ggpredict(glm_site_RHMA, terms = "Site")
+plot(rhma_pred) +
+  ggtitle("RHMA: Survival Probability by Site") +
+  ylab("Predicted Probability of Survival")
+
+library(lme4)
+
+#Refit Models with Interaction: Site * Treatment + (1 | Replicate)
+# For LARA
+glmm_LARA <- glmer(Surv_Bin ~ Site * Treatment + (1 | Replicate), 
+                   data = LARA_data, family = binomial)
+summary(glmm_LARA)
+
+# For RHMA
+glmm_RHMA <- glmer(Surv_Bin ~ Site * Treatment + (1 | Replicate), 
+                   data = RHMA_data, family = binomial)
+summary(glmm_RHMA)
+
+library(sjPlot)
+
+#Add Confidence Intervals to Fixed Effects (Odds Ratios)
+tab_model(glmm_LARA,
+          transform = "exp",  # to show odds ratios
+          show.ci = TRUE,
+          show.p = TRUE,
+          show.se = TRUE,
+          title = "LARA: Logistic Mixed Model with Site x Treatment Interaction")
+###PLEASE NOTE: I love the APA-style table this created! I might use this to display my other results in supplementals.
+
+#Visualise the things now
+
+# Create predictions across Site and Treatment
+pred_lara <- ggpredict(glmm_LARA, terms = c("Treatment", "Site"))
+
+# Plot
+ggplot(pred_lara, aes(x = x, y = predicted, color = group)) +
+  geom_point(position = position_dodge(0.3), size = 3) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), 
+                position = position_dodge(0.3), width = 0.2) +
+  labs(
+    title = "Predicted Probability of Survival",
+    subtitle = "LARA | Site x Treatment Interaction",
+    x = "Treatment", y = "Predicted Survival Probability",
+    color = "Site"
+  ) +
+  theme_minimal()
+
+#The RHMA version of the glmm didn't work and this one didn't either
+glmm_RHMA_simple <- glmer(Surv_Bin ~ Site + Treatment + (1 | Replicate), 
+                          data = RHMA_data, family = binomial)
+summary(glmm_RHMA_simple)
+
+##NEXT STEPS
+#I need to just get the mean overall height by species and any propagule differences upon intake
+```
+
+
+
+## Plot A — Per-treatment panels (replicate “spaghetti” lines)
+
+Each panel is a treatment; lines are **replicates**; facets by **Species** (rows) and **Treatment** (columns). This is best to see replicate variability *within* each treatment.
+
+```{r plot-per-treatment, message=FALSE, warning=FALSE, fig.width=12, fig.height=7}
+ggplot(
+  rep_alive,
+  aes(x = Time_Period_num, y = alive_pct, group = Replicate)
+) +
+  geom_line(alpha = 0.5) +
+  geom_point(alpha = 0.7) +
+  # Add bold mean line per panel (optional but helpful)
+  stat_summary(aes(group = 1), fun = mean, geom = "line", linewidth = 1.2, color = "black") +
+  stat_summary(aes(group = 1), fun = mean, geom = "point", size = 2, color = "black") +
+  facet_grid(Species ~ Treatment_Name) +
+  scale_y_continuous(limits = c(0, 100), expand = expansion(mult = c(0, 0.03))) +
+  scale_x_continuous(breaks = sort(unique(rep_alive$Time_Period_num)),
+                     labels = sort(unique(rep_alive$Time_Period))) +
+  labs(
+    x = "Time Period",
+    y = "Alive (%)",
+    title = "Alive Survivorship Over Time (Replicate-Level)",
+    subtitle = "Faceted by Species × Treatment. Thin lines = replicates; bold black = panel mean."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Plot B — Species panels (all treatments together)
+
+Here replicates are still the lines, but **color = Treatment**. Good for comparing treatments within each species directly.
+
+```{r plot-by-species, message=FALSE, warning=FALSE, fig.width=12, fig.height=7}
+ggplot(
+  rep_alive,
+  aes(x = Time_Period_num, y = alive_pct, group = interaction(Treatment_Name, Replicate), color = Treatment_Name)
+) +
+  geom_line(alpha = 0.5) +
+  geom_point(alpha = 0.8, size = 1.8) +
+  # Mean per treatment over replicates (bold overlay)
+  stat_summary(aes(group = Treatment_Name, color = Treatment_Name),
+               fun = mean, geom = "line", linewidth = 1.2) +
+  stat_summary(aes(group = Treatment_Name, color = Treatment_Name),
+               fun = mean, geom = "point", size = 2.2) +
+  facet_wrap(~ Species, nrow = 2) +
+  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_y_continuous(limits = c(0, 100), expand = expansion(mult = c(0, 0.03))) +
+  scale_x_continuous(breaks = sort(unique(rep_alive$Time_Period_num)),
+                     labels = sort(unique(rep_alive$Time_Period))) +
+  labs(
+    x = "Time Period",
+    y = "Alive (%)",
+    title = "Alive Survivorship Over Time (Replicate-Level)",
+    subtitle = "Faceted by Species; colors = Treatment. Thin lines = replicate trajectories; bold = treatment mean."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Line chart of treatment means over time
+```{r}
+ggplot(alive_summary,
+       aes(x = Time_Period_num, y = mean_alive,
+           color = Treatment_Name, group = Treatment_Name)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  # Optional error bars (±SD across replicates)
+  geom_errorbar(aes(ymin = pmax(mean_alive - sd_alive, 0),
+                    ymax = pmin(mean_alive + sd_alive, 100)),
+                width = 0.15, alpha = 0.8) +
+  facet_wrap(~ Species, nrow = 2) +
+  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_y_continuous(limits = c(0, 100), expand = expansion(mult = c(0, 0.03))) +
+  scale_x_continuous(breaks = sort(unique(alive_summary$Time_Period_num))) +
+  labs(
+    x = "Time Period", y = "Alive (%)",
+    title = "Alive Survivorship Over Time — Treatment Means (±SD)",
+    subtitle = "Means across replicates per Species × Treatment"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5),
+        panel.grid.minor = element_blank())
+```
+
+Stacked area chart of treatment means
+```{r}
+ggplot(alive_summary,
+       aes(x = Time_Period_num, y = mean_alive, fill = Treatment_Name)) +
+  geom_area(position = "stack", alpha = 0.6) +
+  facet_wrap(~ Species, nrow = 2) +
+  scale_fill_manual(values = okabe_ito, name = "Treatment") +
+  scale_x_continuous(breaks = sort(unique(alive_summary$Time_Period_num))) +
+  labs(
+    x = "Time Period", y = "Alive (%)",
+    title = "Alive Survivorship Over Time — Stacked Area of Treatment Means",
+    subtitle = "Visual comparison only; stacked totals have no direct probabilistic meaning"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5),
+        panel.grid.minor = element_blank())
+```
+Prefer an overlapping area look instead of stacking?
+
+Replace position = "stack" with position = "identity" and add alpha (already there) to see treatment areas overlap rather than sum.
+
+
+## 2A) Line chart of treatment mean alive counts over time (± SD optional)
+```{r}
+ggplot(alive_count_summary,
+       aes(x = Time_Period_num, y = mean_alive_n,
+           color = Treatment_Name, group = Treatment_Name)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  # Optional error bars across replicates (comment out if not wanted)
+  geom_errorbar(aes(ymin = pmax(mean_alive_n - sd_alive_n, 0),
+                    ymax = mean_alive_n + sd_alive_n),
+                width = 0.15, alpha = 0.8) +
+  facet_wrap(~ Species, nrow = 2) +
+  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  labs(
+    x = "Time Period",
+    y = "Mean alive count (per replicate)",
+    title = "Alive Plants Over Time — Treatment Mean Counts (±SD)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## 2B) Stacked area chart of treatment mean alive counts (visual totals)
+
+This stacks mean counts across treatments within a species/time. The stacked height is the sum of treatment means (nice for visual composition, but not a single cohort).
+
+```{r}
+ggplot(alive_count_summary,
+       aes(x = Time_Period_num, y = mean_alive_n, fill = Treatment_Name)) +
+  geom_area(position = "stack", alpha = 0.6) +
+  facet_wrap(~ Species, nrow = 2) +
+  scale_fill_manual(values = okabe_ito, name = "Treatment") +
+  labs(
+    x = "Time Period",
+    y = "Mean alive count (per replicate)",
+    title = "Alive Plants Over Time — Stacked Area of Treatment Mean Counts",
+    subtitle = "Stacked sums reflect totals of treatment means within each species/time"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+
+```{r}
+library(ggplot2)
+
+# Suppose max 15 alive individuals corresponds to 100% (adjust if different)
+max_count <- 15
+max_pct <- 100
+scale_factor <- max_pct / max_count  # 100/15 = 6.667
+
+ggplot() +
+  # Mean counts line on primary y-axis
+  geom_line(data = alive_count_summary,
+            aes(x = Time_Period_num,
+                y = mean_alive_n,
+                color = Treatment_Name,
+                group = Treatment_Name),
+            linewidth = 1.2) +
+  geom_point(data = alive_count_summary,
+             aes(x = Time_Period_num,
+                 y = mean_alive_n,
+                 color = Treatment_Name,
+                 group = Treatment_Name),
+             size = 2) +
+  geom_errorbar(data = alive_count_summary,
+                aes(x = Time_Period_num,
+                    ymin = pmax(mean_alive_n - sd_alive_n, 0),
+                    ymax = mean_alive_n + sd_alive_n,
+                    color = Treatment_Name),
+                width = 0.15, alpha = 0.8) +
+  
+  # Mean % line on secondary scale (scaled down to match counts)
+  geom_line(data = alive_summary,
+            aes(x = Time_Period_num,
+                y = mean_alive / scale_factor,  # convert % to count scale
+                color = Treatment_Name,
+                group = Treatment_Name),
+            linetype = "dashed", linewidth = 1.2) +
+  geom_point(data = alive_summary,
+             aes(x = Time_Period_num,
+                 y = mean_alive / scale_factor,
+                 color = Treatment_Name,
+                 group = Treatment_Name),
+             shape = 17, size = 2) +
+  
+  facet_wrap(~ Species, nrow = 2) +
+  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_x_continuous(breaks = sort(unique(alive_summary$Time_Period_num))) +
+  scale_y_continuous(
+    name = "Mean alive count (per replicate)",
+    # secondary axis: transform back to %
+    sec.axis = sec_axis(~ . * scale_factor, name = "Alive (%)")
+  ) +
+  labs(
+    x = "Time Period",
+    title = "Survivorship Over Time — Counts (solid) and Percentages (dashed)",
+    subtitle = "Solid lines: mean counts ± SD; dashed lines: mean % ± SD (secondary y-axis)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+
+## Build replicate-level summaries & add TP0 baseline
+```{r}
+# ---- 1) Build replicate-level summaries & add TP0 baseline ----
+library(dplyr)
+library(ggplot2)
+
+# A. % Alive per replicate (A only)
+rep_alive_pct <- ALLDATA %>%
+  group_by(Species, Treatment_Name, Replicate, Time_Period) %>%
+  summarise(
+    alive_n  = sum(Survivorship == "A", na.rm = TRUE),
+    total_n  = n(),
+    alive_pct = (alive_n / total_n) * 100,
+    .groups = "drop"
+  )
+
+tp_is_char <- is.character(rep_alive_pct$Time_Period)
+
+# TP0 baseline: 15/15 alive for *every* replicate
+baseline_pct <- rep_alive_pct %>%
+  distinct(Species, Treatment_Name, Replicate) %>%
+  mutate(
+    Time_Period = if (tp_is_char) "TP0" else 0,
+    alive_n = 15L,
+    total_n = 15L,
+    alive_pct = 100
+  )
+
+rep_alive_pct_w0 <- bind_rows(rep_alive_pct, baseline_pct) %>%
+  mutate(
+    Time_Period_num = if (tp_is_char) readr::parse_number(Time_Period) else as.numeric(Time_Period)
+  )
+
+alive_summary <- rep_alive_pct_w0 %>%
+  group_by(Species, Treatment_Name, Time_Period_num) %>%
+  summarise(
+    mean_alive = mean(alive_pct, na.rm = TRUE),
+    sd_alive   = sd(alive_pct,   na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# B. Alive counts per replicate (A only)
+rep_alive_counts <- ALLDATA %>%
+  group_by(Species, Treatment_Name, Replicate, Time_Period) %>%
+  summarise(alive_n = sum(Survivorship == "A", na.rm = TRUE), .groups = "drop")
+
+# TP0 baseline: 15 alive per replicate
+baseline_counts <- rep_alive_counts %>%
+  distinct(Species, Treatment_Name, Replicate) %>%
+  mutate(
+    Time_Period = if (tp_is_char) "TP0" else 0,
+    alive_n     = 15L
+  )
+
+rep_alive_counts_w0 <- bind_rows(rep_alive_counts, baseline_counts) %>%
+  mutate(
+    Time_Period_num = if (tp_is_char) readr::parse_number(Time_Period) else as.numeric(Time_Period)
+  )
+
+alive_count_summary <- rep_alive_counts_w0 %>%
+  group_by(Species, Treatment_Name, Time_Period_num) %>%
+  summarise(
+    mean_alive_n = mean(alive_n, na.rm = TRUE),
+    sd_alive_n   = sd(alive_n,   na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# ----- define shapes for each Treatment_Name (match your factor levels) -----
+shape_vals <- c(
+  "Soil"               = 0, # open square
+  "Crushed glass (CG)" = 17, # filled triangle
+  "Sargassum only (SG)"= 15, # filled square
+  "3:1 CG to SG"       = 18, # filled diamond
+  "1:3 CG to SG"       = 8   # asterick
+)
+
+# ---- 2) Dual-axis overlay (counts on primary, % on secondary) ----
+# Set mapping: 100% alive corresponds to 15 plants/replicate
+max_count <- 15
+scale_factor <- 100 / max_count  # convert counts<->percent
+
+# For nice x-axis labels if your original Time_Period was like "TP0","TP1",...
+x_breaks <- sort(unique(alive_count_summary$Time_Period_num))
+x_labels <- if (tp_is_char) paste0("TP", x_breaks) else x_breaks
+
+ggplot() +
+  # Primary axis: mean alive counts (solid) ± SD
+  geom_line(data = alive_count_summary,
+            aes(x = Time_Period_num, y = mean_alive_n,
+                color = Treatment_Name, group = Treatment_Name),
+            linewidth = 1.2) +
+  geom_point(data = alive_count_summary,
+             aes(x = Time_Period_num, y = mean_alive_n,
+                 color = Treatment_Name, shape = Treatment_Name,
+                 group = Treatment_Name),
+             size = 2, stroke = 1) +
+  geom_errorbar(data = alive_count_summary,
+                aes(x = Time_Period_num,
+                    ymin = pmax(mean_alive_n - sd_alive_n, 0),
+                    ymax = mean_alive_n + sd_alive_n,
+                    color = Treatment_Name),
+                width = 0.15, alpha = 0.8) +
+
+  # Secondary axis: mean % alive (dashed) mapped onto count scale
+  geom_line(data = alive_summary,
+            aes(x = Time_Period_num, y = mean_alive / scale_factor,
+                color = Treatment_Name, group = Treatment_Name),
+            linetype = "dashed", linewidth = 1.2) +
+  geom_point(data = alive_summary,
+             aes(x = Time_Period_num, y = mean_alive / scale_factor,
+                 color = Treatment_Name, shape = Treatment_Name,
+                 group = Treatment_Name),
+             size = 2, stroke = 1) +
+
+  facet_wrap(~ Species, nrow = 2) +
+  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_shape_manual(values = shape_vals, name = "Treatment") +
+  scale_x_continuous(breaks = x_breaks, labels = x_labels) +
+  scale_y_continuous(
+    name = "Mean alive count (per replicate)",
+    limits = c(0, max_count),
+    sec.axis = sec_axis(~ . * scale_factor, name = "Alive (%)", breaks = seq(0, 100, by = 20))
+  ) +
+  labs(
+    x = "Time Period (Months)",
+    title = "Treatment Means of Survivorship Over Time by Species",
+    subtitle = "Solid = counts ± SD, dashed = percent; TP0 Baseline"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+
+
+### (Optional) Export the replicate-level table
+
+```{r export, eval=FALSE}
+readr::write_csv(rep_alive, "replicate_alive_percent.csv")
+```
+
+---
+
+**Tweaks you can make**
+
+* Want the **Viridis** palette instead? Replace `scale_color_manual(values = okabe_ito)` with:
+
+  ```r
+  scale_color_manual(values = viridis_palette)
+  ```
+* If you’d like **smoothed means** across time, add `geom_smooth(se = FALSE, method = "loess")` (but be cautious with discrete time points).
+* If you need **Alive + DY** instead, just change the `summarise()` line to:
+
+  ```r
+  alive_n = sum(Survivorship %in% c("A","DY"), na.rm = TRUE)
+  ```
+
+  (and re-knit).
+
+## Survivorship Visualizations
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(viridis)
+library(ggrepel)
+
+# Okabe-Ito colors
+okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7")
+# Viridis colors
+viridis_palette <- viridis(8)  # Generates a palette with 8 distinct colors
+
+# # Using the same dataset as above
+# ALLDATA <- read.csv("Hutchinson_MonthlyMonitoring-MASTER3.csv")
+
+str(ALLDATA)
+
+
+survivorship_summary <- ALLDATA %>%
+  group_by(Species, Treatment_Name, Time_Period, Survivorship) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  mutate(Status = case_when(
+    Survivorship == "A" ~ "Alive",
+    Survivorship == "DY" ~ "Dying",
+    Survivorship == "D" ~ "Dead"))%>%
+  mutate(
+    Time_Period = as.factor(Time_Period),   # Ensure Time_Period is treated as a factor
+    Treatment = as.factor(Treatment_Name))       # Ensure Treatment is treated as a factor
+
+
+# Print the summary table
+print(survivorship_summary)
+
+##I'm using the survivorship_summary dataframe to make the bar charts and the survivorship_summary2 dataframe to make the pie charts.
+
+# Filter for Time_Period == 6
+survivorship_summary_tp6 <- survivorship_summary %>%
+  filter(Time_Period == 6)
+
+# Stacked bar plot
+ggplot(survivorship_summary_tp6, aes(x = Treatment_Name, y = Count, fill = Status)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ Species, ncol = 2) +
+  labs(title = "Plant Survivorship (Time Period 6)",
+       x = "Treatment", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5, size = 20)) +
+  scale_fill_manual(values = okabe_ito)
+
+# Save the plot to a file
+# ggsave("final_survivorship_stackedbarchart.png", width = 10, height = 6)
+
+# Side-by-side bar plot
+ggplot(survivorship_summary_tp6, aes(x = Treatment_Name, y = Count, fill = Status)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  facet_wrap(~ Species, ncol = 2) +
+  labs(title = "Plant Survivorship (Time Period 6)",
+       x = "Treatment", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5, size = 20)) +
+  scale_fill_manual(values = okabe_ito)
+
+# Save the plot to a file
+# ggsave("final_survivorship_sidebarchart.png", width = 10, height = 6)
+```
+
+
+```{r}
+#Create 2nd dataframe for the pie charts but without Treatment 
+survivorship_summary2 <- ALLDATA %>%
+  group_by(Species, Time_Period, Survivorship) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  mutate(Status = case_when(
+    Survivorship == "A" ~ "Alive",
+    Survivorship == "DY" ~ "Dying",
+    Survivorship == "D" ~ "Dead"))%>%
+  mutate(
+    Time_Period = as.factor(Time_Period))   # Ensure Time_Period is treated as a factor
+
+
+# Calculate percentages and positions for labels
+survivorship_summary2 <- survivorship_summary2 %>%
+  group_by(Time_Period, Species) %>%
+  mutate(Percentage = Count / sum(Count) * 100,
+         csum = rev(cumsum(rev(Count))),
+         pos = Count / 2 + lead(csum, 1),
+         pos = if_else(is.na(pos), Count / 2, pos))
+
+
+
+# Filter for Time_Period == 6
+survivorship_summary2_tp6 <- survivorship_summary2 %>%
+  filter(Time_Period == 6)
+
+# Pie chart
+ggplot(survivorship_summary2_tp6, aes(x = "", y = Count, fill = Status)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +
+  facet_wrap(~ Species, ncol = 2) +
+  labs(title = "Plant Survivorship Pie Chart (Time Period 6)",
+       x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),
+        plot.title = element_text(hjust = 0.5, size = 20)) +
+  scale_fill_manual(values = okabe_ito) +
+  geom_label_repel(data = survivorship_summary2_tp6,
+                   aes(y = pos, label = paste0(round(Percentage, 1), "%")),
+                   size = 4,
+                   nudge_x = 1,
+                   show.legend = FALSE)
+
+# Save the plot to a file
+# ggsave("final_survivorship_piechart.png", width = 10, height = 6)
+```
+
+
+```{r}
+# Summarize the data
+survivorship_summary3 <- ALLDATA %>%
+  group_by(Treatment_Name, Time_Period, Species) %>%  # Group by treatment (with new names), time period, and Species
+  mutate(
+    Time_Period = as.factor(Time_Period) # Ensure Time_Period is treated as a factor
+  ) %>%
+  summarise(
+    Total = n(),  # Total number of plants in that group
+    Alive = sum(Survivorship == "A", na.rm = TRUE),  # Number of plants alive
+    Dying = sum(Survivorship == "DY", na.rm = TRUE),  # Number of plants dying
+    Dead = sum(Survivorship == "D", na.rm = TRUE),  # Number of plants dead
+    Survival_Rate = Alive / Total * 100 + Dying/Total *100,  # Calculate survival rate
+    .groups = 'drop'
+  )
+
+# Print the summary table
+print(survivorship_summary3)
+
+# Create a line graph of survivorship rates over time for each treatment
+ggplot(survivorship_summary3, aes(x = Time_Period, y = Survival_Rate, group = Treatment_Name, color = Treatment_Name, shape = Treatment_Name)) +
+  geom_line(linewidth = 1) +  # Add lines for each treatment
+  geom_point(size = 3) +  # Add points to mark data points
+  facet_wrap(~ Species) + # Separate plots by Species
+  labs(
+    title = "Survivorship Rates Across Treatment Groups Over Time By Species",
+    x = "Time Period (Months)",
+    y = "Survival Rate (%)",
+    color = "Treatment Group"  # Legend title
+  ) +
+  scale_color_discrete(name = "Treatment Group") +
+  scale_shape_manual(name = "Treatment Group",
+                     values = c(0, 18, 15, 3, 17)) + #Add specific shapes in a high contrast order
+  theme_minimal() +  # Use a minimal theme for cleaner look
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 15),  # Center and enlarge title
+    axis.title = element_text(size = 12),  # Enlarge axis titles
+    legend.title = element_text(size = 12),  # Enlarge legend title
+    legend.text = element_text(size = 10)  # Enlarge legend text
+  )
+# # Optional: Save the plot to a file
+# ggsave("final_survivorship_rates_plot_species.png", width = 8, height = 6, units = "in")
+
+# Filter for Time_Period == 6
+survivorship_summary3_tp6 <- survivorship_summary3 %>%
+  filter(Time_Period == 6)
+
+str(survivorship_summary3_tp6)
+
+
+ggplot(survivorship_summary3_tp6, aes(x = Treatment_Name, y = Survival_Rate, fill = Species)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(
+    title = "Survival Rates by Treatment and Species (Time Period 6)",
+    x = "Treatment Group",
+    y = "Survival Rate (%)",
+    fill = "Species"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+
+ggplot(survivorship_summary3_tp6, aes(x = Survival_Rate, y = Treatment_Name, color = Species, shape = Species)) +
+  geom_point(size = 4) +
+  labs(
+    title = "Survivorship by Treatment Group at Time Period 6",
+    x = "Survival Rate (%)",
+    y = "Treatment Group",
+    color = "Species",
+    shape = "Species"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16)
+  )
+```
+
+
+```{r}
+#Step 1: Create Long Format with Alive + Dead (for Time_Period 6 only)
+
+# Create long format: Alive vs Dead only
+survivorship_pie_tp6 <- survivorship_summary3_tp6 %>%
+  select(Species, Treatment_Name, Alive, Dead) %>%
+  pivot_longer(cols = c(Alive, Dead),
+               names_to = "Status",
+               values_to = "Count")
+
+#Step 2: Calculate Total and Percentages for Pie Labels
+
+# Calculate total per Species and Treatment, then % per Status
+survivorship_pie_tp6 <- survivorship_pie_tp6 %>%
+  group_by(Species, Treatment_Name) %>%
+  mutate(
+    Total = sum(Count),
+    Percentage = Count / Total * 100,
+    csum = rev(cumsum(rev(Count))),
+    pos = Count / 2 + lead(csum, 1),
+    pos = if_else(is.na(pos), Count / 2, pos)
+  ) %>%
+  ungroup()
+
+
+#Step 3: Plot Pie Charts for Survivorship vs Mortality
+ggplot(survivorship_pie_tp6, aes(x = "", y = Count, fill = Status)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +
+  facet_grid(Species ~ Treatment_Name) +
+  geom_label_repel(
+    aes(y = pos, label = paste0(round(Percentage, 1), "%")),
+    size = 3.5,
+    show.legend = FALSE
+  ) +
+  labs(
+    title = "Survivorship vs Mortality by Treatment and Species (Time Period 6)",
+    x = NULL, y = NULL
+  ) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16),
+    strip.text = element_text(size = 12)
+  ) +
+  scale_fill_manual(values = c("Alive" = "#1b9e77", "Dead" = "#d95f02"))
+
+```
+
+
+## Survivorship Analyses (Statistics)
+```{r}
+##This R script aims to import and visualize survivorship data for red and white mangroves grown in 5 different treatments over a 6 month period.
+
+# Load required libraries
+library(ggrepel)
+library(emmeans)
+library(lme4)
+
+
+# Step 1: Clean and Prepare Data
+survivors_clean <- ALLDATA %>%
+  mutate(
+    Surv_Bin = ifelse(Survivorship %in% c("A"), 1, 0),
+    Treatment = case_when(
+      Treatment == "A" ~ "Soil",
+      Treatment == "B" ~ "Crushed glass (CG)",
+      Treatment == "C" ~ "Sargassum only (SG)",
+      Treatment == "D" ~ "3:1 CG to SG",
+      Treatment == "E" ~ "1:3 CG to SG",
+      TRUE ~ as.character(Treatment)
+    ),
+    Treatment = factor(Treatment, levels = c("Soil", "Crushed glass (CG)", "Sargassum only (SG)", "1:3 CG to SG", "3:1 CG to SG")), #order the treatments based on most SG to least SG for visualizations
+    Time_Period = factor(Time_Period, levels = c("1", "2", "3", "4", "5", "6")),
+    Species = factor(Species)
+  )
+
+# Step 2: Subset by Species
+RHMA <- survivors_clean %>% filter(Species == "RHMA")
+LARA <- survivors_clean %>% filter(Species == "LARA")
+
+# Step 3: Summarize and Visualize Raw Survivorship
+plot_survivorship <- function(data, species_name) {
+  data %>%
+    group_by(Treatment, Time_Period) %>%
+    summarise(ALLDATA = sum(Surv_Bin), .groups = 'drop') %>%
+    ggplot(aes(x = Treatment, y = ALLDATA, fill = Time_Period)) +
+    geom_bar(stat = "identity", position = position_dodge()) +
+    labs(title = paste("Survivorship by Treatment and Time -", species_name),
+         y = "Number Surviving") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+plot_survivorship(RHMA, "RHMA")
+plot_survivorship(LARA, "LARA")
+```
+
+
+```{r GLM}
+# Step 4: Fit Logistic Regression (GLM)
+glm_LARA <- glm(Surv_Bin ~ Treatment * Time_Period, data = LARA, family = binomial())
+glm_RHMA <- glm(Surv_Bin ~ Treatment * Time_Period, data = RHMA, family = binomial())
+
+summary(glm_LARA)
+summary(glm_RHMA)
+
+# Step 5: Estimated Marginal Means and Plotting (LARA example)
+emm_LARA <- emmeans(glm_LARA, pairwise ~ Treatment, type = "response")
+pred_LARA <- as.data.frame(emm_LARA$emmeans)
+
+ggplot(pred_LARA, aes(x = Treatment, y = prob)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL),
+                position = position_dodge(width = 0.8), width = 0.2) +
+  labs(title = "Predicted Probability of Survival by Treatment (LARA)",
+       x = "Treatment", y = "Probability of Survival") +
+  theme_minimal()
+```
+
+
+```{r GLM-Reps}
+
+library(lme4)
+
+# Step 6: Fit GLMMs with Random Effect of Replicate
+RHMA$Time_Period <- factor(RHMA$Time_Period, levels = 1:6)
+LARA$Time_Period <- factor(LARA$Time_Period, levels = 1:6)
+
+glmm_LARA <- glmer(Surv_Bin ~ Treatment * Time_Period + (1 | Replicate), data = LARA, family = binomial())
+glmm_RHMA <- glmer(Surv_Bin ~ Treatment * Time_Period + (1 | Replicate), data = RHMA, family = binomial())
+
+summary(glmm_LARA)
+summary(glmm_RHMA)
+table(RHMA$Treatment, RHMA$Time_Period, RHMA$Surv_Bin)
+
+
+# Optional: Simple GLMMs (without interaction)
+glmm_LARA_simple <- glmer(Surv_Bin ~ Treatment + Time_Period + (1 | Replicate), data = LARA, family = binomial())
+glmm_RHMA_simple <- glmer(Surv_Bin ~ Treatment + Time_Period + (1 | Replicate), data = RHMA, family = binomial())
+
+summary(glmm_LARA_simple)
+exp(fixef(glmm_LARA_simple)) #To understand the magnitude, exponentiate the coefficients uing the Odds ratio style
+# (Intercept)  TreatmentCrushed glass (CG) TreatmentSargassum only (SG) 
+# 6.64499077                   0.28309712                   0.09671336 
+# Treatment3:1 CG to SG        Treatment1:3 CG to SG        Time_Period2 
+# 0.31972488                   0.08908893                   0.45676099 
+# Time_Period3                 Time_Period4                 Time_Period5 
+# 0.26494028                   0.21065935                   0.17546619 
+# Time_Period6 
+# 0.16821680
+```
+
+
+```{r Odds-Ratios}
+##Time to Visualize the Odds Ratios of Survivorship
+#STEP 1: Get Odds Ratios + Confidence Intervals for LARA
+# Extract fixed effects and confidence intervals (log-odds scale)
+coefs_LARA <- fixef(glmm_LARA_simple)
+ci_logit_LARA <- confint(glmm_LARA_simple, method = "Wald")  # or method = "profile" (slower, more accurate)
+
+# Subset to fixed effects only
+ci_logit_LARA <- ci_logit_LARA[names(coefs_LARA), ]
+
+# Exponentiate to get odds ratios and confidence intervals
+odds_ratios_LARA <- exp(coefs_LARA)
+lower_ci_LARA <- exp(ci_logit_LARA[, 1])
+upper_ci_LARA <- exp(ci_logit_LARA[, 2])
+
+# Create tidy data frame
+or_df_LARA <- data.frame(
+  Predictor = names(odds_ratios_LARA),
+  Odds_Ratio = odds_ratios_LARA,
+  CI_Lower = lower_ci_LARA,
+  CI_Upper = upper_ci_LARA
+)
+
+#STEP 2: Plot Odds Ratios with Confidence Intervals for LARA
+
+ggplot(or_df_LARA, aes(x = reorder(Predictor, Odds_Ratio), y = Odds_Ratio)) +
+  geom_point(size = 3, color = "#1f78b4") +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), width = 0.2, color = "#1f78b4") +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  scale_y_log10() +
+  coord_flip() +
+  labs(
+    title = "LARA: Odds Ratios with 95% Confidence Intervals",
+    x = "Predictor",
+    y = "Odds Ratio (log scale)"
+  ) +
+  theme_minimal(base_size = 12)
+
+summary(glmm_RHMA_simple)
+OR_RHMA <- exp(fixef(glmm_RHMA_simple))
+round(OR_RHMA, 3)
+
+# STEP 1: Get Odds Ratios & 95% Confidence Intervals
+
+# Extract fixed effects and confidence intervals (log-odds)
+coefs <- fixef(glmm_RHMA_simple)
+ci_logit <- confint(glmm_RHMA_simple, method = "Wald")  # Use "Wald" or "profile" (slower but more accurate)
+
+# Subset to fixed effects only (remove random effect CI)
+ci_logit <- ci_logit[names(coefs), ]
+
+# Exponentiate to get odds ratios and CI bounds
+odds_ratios <- exp(coefs)
+lower_ci <- exp(ci_logit[, 1])
+upper_ci <- exp(ci_logit[, 2])
+
+# Create tidy data frame
+or_df <- data.frame(
+  Predictor = names(odds_ratios),
+  Odds_Ratio = odds_ratios,
+  CI_Lower = lower_ci,
+  CI_Upper = upper_ci
+)
+
+# STEP 2: Plot Odds Ratios with Confidence Intervals
+ggplot(or_df, aes(x = reorder(Predictor, Odds_Ratio), y = Odds_Ratio)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), width = 0.2) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  scale_y_log10() +
+  coord_flip() +
+  labs(
+    title = "Odds Ratios with 95% Confidence Intervals (RHMA)",
+    x = "Predictor",
+    y = "Odds Ratio (log scale)"
+  ) +
+  theme_minimal()
+
+
+##Plot 1 graph with both models
+#Step 1: Prepare Odds Ratio Data for Both Models
+
+# Helper function to extract odds ratios and CI
+extract_or_data <- function(model, label) {
+  coefs <- fixef(model)
+  ci <- confint(model, method = "Wald")[names(coefs), ]
+  
+  data.frame(
+    Predictor = names(coefs),
+    Odds_Ratio = exp(coefs),
+    CI_Lower = exp(ci[, 1]),
+    CI_Upper = exp(ci[, 2]),
+    Species = label
+  )
+}
+
+# Extract data for both species
+or_df_LARA <- extract_or_data(glmm_LARA_simple, "LARA")
+or_df_RHMA <- extract_or_data(glmm_RHMA_simple, "RHMA")
+
+# Combine
+or_df_combined <- bind_rows(or_df_LARA, or_df_RHMA)
+
+#Step 2: Plot Combined Odds Ratios
+
+ggplot(or_df_combined, aes(x = Predictor, y = Odds_Ratio, color = Species, shape = Species)) +
+  geom_point(position = position_dodge(width = 0.5), size = 3) +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper),
+                position = position_dodge(width = 0.5), width = 0.2) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "gray40") +
+  scale_y_log10() +
+  labs(
+    title = "Odds Ratios with 95% CI by Species",
+    x = "Predictor",
+    y = "Odds Ratio (log scale)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
