@@ -28,19 +28,19 @@ params:
 
 Save as `mean_total_height_prefixed.Rmd` and knit.
 
+
+
+
+** Filter out anything dead at tp6
+
+what was the longest period i had everything alive for
+correlate how long something was a live to see if how long its alive affected growth rate
+
+
 ```{r setup, message=FALSE, warning=FALSE}
 library(tidyverse)
 library(lubridate)
 library(janitor)
-
-# Attempt to load gt; fallback to kable if not available or rlang too old
-use_gt <- FALSE
-if (requireNamespace("gt", quietly = TRUE)) {
-  if (packageVersion("rlang") >= "1.1.4") {
-    library(gt)
-    use_gt <- TRUE
-  }
-}
 
 # Helper to render table with either gt or knitr::kable
 as_table <- function(df, title = NULL) {
@@ -72,29 +72,25 @@ clean_num <- function(x) {
 ## 1) Load data (from memory or CSV)
 
 ```{r load}
-p <- params
-if (!exists("RHMA_IntakeData") || !exists("survivors_tp1_to_tp6")) {
-  stopifnot(isTRUE(p$use_csv_if_missing))
-  message("Reading CSVs because required data frames not found in workspace...")
-  RHMA_IntakeData      <- readr::read_csv(p$intake_path,  show_col_types = FALSE)
-  survivors_tp1_to_tp6 <- readr::read_csv(p$monitor_path, show_col_types = FALSE)
-}
-mon_raw <- survivors_tp1_to_tp6 %>% clean_names()
-intake_raw <- RHMA_IntakeData
+
+  RHMA_IntakeData      <- read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/RHMA_IntakeData.csv")
+mon_raw      <- read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/Hutchinson_MonthlyMonitoring-MASTER3.csv")
+
+mon_raw <- mon_raw %>% clean_names()
+
 ```
 
 ## 2) Column checks
 
 ```{r check-cols}
 req_intake <- c("Prop_ID", "Site", "Species", "Treatment", "RHMA_Height_1", "RHMA_Height_2", "Epi_Length")
-missing_intake <- setdiff(req_intake, names(intake_raw))
+missing_intake <- setdiff(req_intake, names(RHMA_IntakeData))
 if (length(missing_intake)) stop("Intake missing: ", paste(missing_intake, collapse = ", "))
 
 req_mon <- c("prop_id","species","treatment","location",
              "rhma_height_1","rhma_height_2",
              "date_monitored","time_period","survivorship", "rhma_epi_length")
-missing_mon <- setdiff(req_mon, names(mon_raw))
-if (length(missing_mon)) stop("Monitoring missing: ", paste(missing_mon, collapse = ", "))
+
 ```
 
 ## 3) Filter Alive at BOTH TP1 & TP6
@@ -116,7 +112,7 @@ alive_ids <- mon_raw %>%
 ## 4) Prepare intake & monitoring
 
 # ```{r prep-data}
-# intake <- intake_raw %>%
+# intake <- RHMA_IntakeData %>%
 #   filter(Prop_ID %in% alive_ids) %>%
 #   mutate(RHMA_Height_1_Intake = as.numeric(RHMA_Height_1),
 #          RHMA_Height_2_Intake = as.numeric(RHMA_Height_2))
@@ -138,8 +134,7 @@ alive_ids <- mon_raw %>%
 # ```
 This is the secondary option of code
 ```{r prep-data}
-intake <- intake_raw %>%
-  filter(Prop_ID %in% alive_ids) %>%
+intake <- RHMA_IntakeData %>%
   mutate(
     RHMA_Height_1_Intake = clean_num(RHMA_Height_1),
     RHMA_Height_2_Intake = clean_num(RHMA_Height_2),
@@ -153,8 +148,7 @@ mon_prepped <- mon_raw %>%
     rhma_height_1   = clean_num(rhma_height_1),
     rhma_height_2   = clean_num(rhma_height_2),
     rhma_epi_length = clean_num(if ("rhma_epi_length" %in% names(.)) rhma_epi_length else NA_real_)
-  ) %>%
-  filter(prop_id %in% alive_ids)
+  ) 
 
 mon_tp <- mon_prepped %>% filter(time_period == params$target_time_period)
 ids_with_tp <- unique(mon_tp$prop_id)
@@ -211,10 +205,10 @@ results2 <- intake %>%
     total_mon_height_2    = rhma_height_2 + rhma_epi_length,
 
     # Deltas
-    total_height_substrate_cm = total_mon_height_1 - total_intake_height_1,
-    total_height_pot_cm       = total_mon_height_2 - total_intake_height_2,
-    total_height_mean_cm      = {
-      m <- cbind(total_height_substrate_cm, total_height_pot_cm)
+    growth_substrate = total_mon_height_1 - total_intake_height_1,
+    growth_pot       = total_mon_height_2 - total_intake_height_2,
+    average_growth      = {
+      m <- cbind(growth_substrate, growth_pot)
       x <- rowMeans(m, na.rm = TRUE)
       ifelse(is.nan(x), NA_real_, x)
     },
@@ -234,7 +228,7 @@ results2 <- intake %>%
 ```{r qc-na-check, echo=FALSE}
 na_cols <- c("total_intake_height_1","total_intake_height_2",
              "total_mon_height_1","total_mon_height_2",
-             "total_height_substrate_cm","total_height_pot_cm","total_height_mean_cm")
+             "growth_substrate","growth_pot","average_growth")
 colSums(is.na(results2[na_cols]))
 ```
 
@@ -248,10 +242,10 @@ results <- intake %>%
          total_intake_height_2 = RHMA_Height_2_Intake + Epi_Length,
          total_mon_height_1 = rhma_height_1 + rhma_epi_length,
          total_mon_height_2 = rhma_height_2 + rhma_epi_length,
-         total_height_substrate_cm = total_mon_height_1 - total_intake_height_1,
-         total_height_pot_cm = total_mon_height_2 - total_intake_height_2,
-         total_height_mean_cm = {
-           m <- cbind(total_height_substrate_cm,total_height_pot_cm)
+         growth_substrate = total_mon_height_1 - total_intake_height_1,
+         growth_pot = total_mon_height_2 - total_intake_height_2,
+         average_growth = {
+           m <- cbind(growth_substrate,growth_pot)
            x <- rowMeans(m, na.rm=TRUE)
            ifelse(is.nan(x), NA_real_, x)
          },
@@ -270,24 +264,24 @@ results <- intake %>%
 fmt_mean <- \(x) mean(x, na.rm = TRUE)
 
 overall <- results %>%
-  summarise(n = sum(!is.na(total_height_mean_cm)),
-            mean_total_height_cm = fmt_mean(total_height_mean_cm),
-            mean_substrate_cm = fmt_mean(total_height_substrate_cm),
-            mean_pot_cm = fmt_mean(total_height_pot_cm))
+  summarise(n = sum(!is.na(average_growth)),
+            mean_total_height_cm = fmt_mean(average_growth),
+            mean_substrate_cm = fmt_mean(growth_substrate),
+            mean_pot_cm = fmt_mean(growth_pot))
 
 by_treatment <- results %>%
   group_by(Treatment) %>%
-  summarise(n = sum(!is.na(total_height_mean_cm)),
-            mean_total_height_cm = fmt_mean(total_height_mean_cm),
-            mean_substrate_cm = fmt_mean(total_height_substrate_cm),
-            mean_pot_cm = fmt_mean(total_height_pot_cm), .groups="drop")
+  summarise(n = sum(!is.na(average_growth)),
+            mean_total_height_cm = fmt_mean(average_growth),
+            mean_substrate_cm = fmt_mean(growth_substrate),
+            mean_pot_cm = fmt_mean(growth_pot), .groups="drop")
 
 by_site <- results %>%
   group_by(Site) %>%
-  summarise(n = sum(!is.na(total_height_mean_cm)),
-            mean_total_height_cm = fmt_mean(total_height_mean_cm),
-            mean_substrate_cm = fmt_mean(total_height_substrate_cm),
-            mean_pot_cm = fmt_mean(total_height_pot_cm), .groups="drop")
+  summarise(n = sum(!is.na(average_growth)),
+            mean_total_height_cm = fmt_mean(average_growth),
+            mean_substrate_cm = fmt_mean(growth_substrate),
+            mean_pot_cm = fmt_mean(growth_pot), .groups="drop")
 
 # Display with gt or kable fallback
 as_table(overall, "Overall — Mean Total Height (cm)")
@@ -301,9 +295,9 @@ as_table(by_site, "By Site (Intake) — Mean Total Height (cm)")
 <!-- results %>% -->
 <!--   pivot_longer(starts_with("total_height_"), names_to="metric", values_to="cm") %>% -->
 <!--   mutate(metric = recode(metric, -->
-<!--                          total_height_substrate_cm="Above Substrate", -->
-<!--                          total_height_pot_cm="Above Pot", -->
-<!--                          total_height_mean_cm="Row Mean")) %>% -->
+<!--                          growth_substrate="Above Substrate", -->
+<!--                          growth_pot="Above Pot", -->
+<!--                          average_growth="Row Mean")) %>% -->
 <!--   ggplot(aes(x=cm)) + geom_histogram(bins=30) + -->
 <!--   facet_wrap(~metric, scales="free_y") + -->
 <!--   labs(x="Height (cm)", y="Count", -->
@@ -323,9 +317,9 @@ library(tidyr)
 library(ggplot2)
 
 # The exact metric columns you want to plot
-wanted <- c("total_height_substrate_cm",
-            "total_height_pot_cm",
-            "total_height_mean_cm")
+wanted <- c("growth_substrate",
+            "growth_pot",
+            "average_growth")
 
 # Pivot only existing columns, drop NAs, and recode safely
 plot_data <- results %>%
@@ -338,9 +332,9 @@ plot_data <- results %>%
   mutate(
     metric = recode(
       metric,
-      "total_height_substrate_cm" = "Above Substrate",
-      "total_height_pot_cm"       = "Above Pot",
-      "total_height_mean_cm"      = "Row Mean",
+      "growth_substrate" = "Above Substrate",
+      "growth_pot"       = "Above Pot",
+      "average_growth"      = "Row Mean",
       .default = metric   # <- prevents NAs if other names sneak in
     )
   )
@@ -381,9 +375,9 @@ results_with_id <- results %>%
 outliers_tbl <- results_with_id %>%
   pivot_longer(starts_with("total_height_"), names_to="metric", values_to="cm") %>%
   mutate(metric = recode(metric,
-                         total_height_substrate_cm="Above Substrate",
-                         total_height_pot_cm="Above Pot",
-                         total_height_mean_cm="Row Mean")) %>%
+                         growth_substrate="Above Substrate",
+                         growth_pot="Above Pot",
+                         average_growth="Row Mean")) %>%
   filter(!is.na(cm)) %>%
   group_by(metric) %>%
   mutate(Q1 = quantile(cm, 0.25, na.rm = TRUE),

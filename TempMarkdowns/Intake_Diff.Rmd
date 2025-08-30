@@ -4,8 +4,6 @@ author: "Sarai Hutchinson"
 date: "2025-08-23"
 output: html_document
 params:
-  rhma_path: "RHMA_IntakeData.csv"
-  lara_path: "LARA_IntakeData.csv"
   out_dir:  "intake_outputs"
 ---
 
@@ -44,7 +42,7 @@ if (!exists("parse_mdy_relaxed")) {
 1. RHMA Intake
 1.1 Read & Clean
 ```{r rhma-clean, include=TRUE}
-raw <- readr::read_delim(params$rhma_path, delim = ",", guess_max = 10000, show_col_types = FALSE)
+raw <- read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/RHMA_IntakeData.csv")
 dat0 <- raw %>% clean_names()
 
 dat1 <- dat0 %>%
@@ -392,7 +390,7 @@ readr::write_csv(total_height_table, file.path(params$out_dir, "rhma_total_heigh
 2. LARA Intake
 2.1 Read & Clean
 ```{r lara-setup, include=TRUE}
-lara_raw <- readr::read_delim(params$lara_path, delim = ",", guess_max = 10000, show_col_types = FALSE)
+lara_raw <- read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/LARA_IntakeData.csv")
 lara0 <- lara_raw %>% clean_names()
 
 # Handle duplicated id columns from "Prop ID" and "Prop_ID"

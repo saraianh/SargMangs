@@ -101,13 +101,16 @@ survivor_full_history <- ALLDATA %>%
 print(survivor_full_history)
 
 # Export the full dataset of ALLDATA (all time periods) to CSV
-write.csv(survivor_full_history, "survivors_tp1_to_tp6.csv", row.names = FALSE)
+write.csv(survivor_full_history, "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\survivors_tp1_to_tp6.csv", row.names = FALSE)
 ```
 
 
 
 
 ## Method
+
+Whats the underlying distributions of the data
+
 
 We calculate **percent Alive per replicate** at each monitoring period, then visualize the replicate trajectories over time. Alive is coded as `"A"` (DY and D are not counted as alive here).
 
@@ -120,7 +123,8 @@ rep_alive <- ALLDATA %>%
     total_n = n(),
     alive_pct = (alive_n / total_n) * 100,
     .groups = "drop"
-  )
+  )%>%
+  arrange(Species, Treatment_Name, Time_Period, Replicate)
 
 # Order/label Time_Period for plotting
 if (is.character(rep_alive$Time_Period)) {
@@ -141,7 +145,8 @@ alive_summary <- rep_alive %>%
     mean_alive = mean(alive_pct, na.rm = TRUE),
     sd_alive   = sd(alive_pct,   na.rm = TRUE),
     .groups = "drop"
-  )
+  ) %>%
+  arrange(Species, Treatment_Name, Time_Period_num)
 ```
 
 
@@ -289,6 +294,10 @@ RHMA_data <- survivors_clean2 %>%
 glm_site_LARA <- glm(Surv_Bin ~ Site, data = LARA_data, family = binomial)
 summary(glm_site_LARA)
 
+#different threshold of survivorship based on the findings
+
+#have site as a random effect and treatment as a fixed effect
+
 glm_site_RHMA <- glm(Surv_Bin ~ Site, data = RHMA_data, family = binomial)
 summary(glm_site_RHMA)
 
@@ -309,14 +318,14 @@ plot(rhma_pred) +
 
 library(lme4)
 
-#Refit Models with Interaction: Site * Treatment + (1 | Replicate)
+#Refit Models with Interaction: Site * Treatment. no mixed effects
 # For LARA
-glmm_LARA <- glmer(Surv_Bin ~ Site * Treatment + (1 | Replicate), 
+glmm_LARA <- glmer(Surv_Bin ~ Treatment + (1|Site),
                    data = LARA_data, family = binomial)
 summary(glmm_LARA)
 
 # For RHMA
-glmm_RHMA <- glmer(Surv_Bin ~ Site * Treatment + (1 | Replicate), 
+glmm_RHMA <- glmer(Surv_Bin ~ Treatment + (1|Site),
                    data = RHMA_data, family = binomial)
 summary(glmm_RHMA)
 
