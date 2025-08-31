@@ -512,7 +512,7 @@ broom::tidy(cox_sarg, exponentiate = TRUE, conf.int = TRUE) %>%
   dplyr::select(term, estimate, conf.low, conf.high, p.value)
 ```
 
-```r
+```{r}
 # ---- 5) If PH is violated: two easy remedies --------------------------
 # A) Stratify on the offending factor (lets baseline hazard differ)
 #    Example: allow different baselines by Species but keep Treatment effects common:
