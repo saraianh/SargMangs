@@ -1,0 +1,1085 @@
+---
+title: "Intake Differences by Species, Treatment, and Site (RHMA vs LARA)"
+author: "Sarai Hutchinson"
+date: "2025-09-01"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    number_sections: true
+params:
+  out_dir:  "intake_outputs"
+  rhma_path: "SargMangs/Data/RHMA_IntakeData.csv"
+  lara_path: "SargMangs/Data/LARA_IntakeData.csv"
+---
+
+
+# 0) Setup & Plan
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 9, fig.height = 6)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(lubridate)
+  library(janitor)
+  library(broom)
+  library(emmeans)
+  library(car)        # Anova (type II / III), Levene
+  library(FSA)        # Dunn's test (non-parametrics)
+})
+
+set.seed(20250901)
+
+# Output dir
+if (!dir.exists(params$out_dir)) dir.create(params$out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Okabe–Ito palette (colorblind-friendly)
+okabe_ito <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#999999")
+
+# Robust MDY parser (handles 10/25/24 or 10/25/2024 and with times)
+parse_mdy_relaxed <- function(x) suppressWarnings(parse_date_time(x, orders = c("mdy", "mdy HM", "mdy HMS")))
+```
+
+**Analysis questions**  
+**Q1.** Were there intake differences between species (RHMA vs LARA)?  
+**Q2.** Did initial substrate/treatment influence intake metrics?  
+**Q3.** Were there collection site differences, and do they modify species/treatment patterns?  
+
+We answer Q1–Q3 with: (a) cleaning + QC, (b) summaries; (c) linear models with all two-way interactions (`species×treatment`, `species×site`, `treatment×site`) and EMMs; and (d) nonparametric site-wise checks when assumptions are flagged. 
+
+---
+
+# 1) Read, Clean, and Standardize
+
+```{r read-clean}
+# ---- RHMA ----
+rhma_raw <- readr::read_csv(params$rhma_path, show_col_types = FALSE) %>% clean_names()
+
+rhma1 <- rhma_raw %>%
+  mutate(
+    intake_date    = parse_mdy_relaxed(intake_date),
+    collection_date = {
+      cd <- stringr::str_extract(collection_date, "\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b"); parse_mdy_relaxed(cd)
+    },
+    site      = str_squish(as.character(site)),
+    species   = "RHMA",
+    treatment = str_squish(as.character(treatment)),
+    hypo_color = str_squish(as.character(hypo_color)),
+    roots      = str_squish(as.character(roots))
+  )
+
+num_cols_rhma <- c("diameter","epi_length","hypo_length","total_height","mass","rhma_height_1","rhma_height_2")
+
+rhma2 <- rhma1 %>%
+  mutate(across(all_of(num_cols_rhma), ~ suppressWarnings(as.numeric(str_replace_all(.x, ",", ""))))) %>%
+  filter(!is.na(intake_date)) %>%
+  arrange(prop_id, intake_date) %>%
+  group_by(prop_id) %>%
+  slice(1) %>% ungroup()
+
+# Standardize to cross-species names
+rhma_std <- rhma2 %>%
+  mutate(
+    total_size   = total_height,    # RHMA height ~ LARA length
+    part1_length = epi_length,
+    part2_length = hypo_length,
+    width_diam   = diameter
+  )
+
+# ---- LARA ----
+lara_raw <- readr::read_csv(params$lara_path, show_col_types = FALSE) %>% clean_names()
+
+# Some LARA files have both Prop ID and prop_id; prefer prop_id
+lara1 <- lara_raw %>%
+  mutate(
+    prop_id = coalesce(.data$prop_id),
+    site      = str_squish(as.character(site)),
+    species   = "LARA",
+    treatment = str_squish(as.character(treatment)),
+    seed_color = str_squish(as.character(seed_color))
+  ) %>%
+  mutate(
+    intake_date    = parse_mdy_relaxed(intake_date),
+    collection_date = {
+      cd <- stringr::str_extract(collection_date, "\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b"); parse_mdy_relaxed(cd)
+    }
+  )
+
+num_cols_lara <- c("width","prop_length","rad_length","total_length","mass")
+
+lara2 <- lara1 %>%
+  mutate(across(all_of(num_cols_lara), ~ suppressWarnings(as.numeric(str_replace_all(.x, ",", ""))))) %>%
+  filter(!is.na(intake_date)) %>%
+  arrange(prop_id, intake_date) %>%
+  group_by(prop_id) %>%
+  slice(1) %>% ungroup()
+
+# Standardize to cross-species names
+lara_std <- lara2 %>%
+  mutate(
+    total_size   = total_length,    # LARA length ~ RHMA height
+    part1_length = prop_length,
+    part2_length = rad_length,
+    width_diam   = width
+  )
+
+# ---- Combine & factor levels ----
+intake_all <- bind_rows(
+  rhma_std %>% select(prop_id, species, site, treatment, mass, total_size, part1_length, part2_length, width_diam),
+  lara_std %>% select(prop_id, species, site, treatment, mass, total_size, part1_length, part2_length, width_diam)
+) %>%
+  mutate(
+    species   = factor(species, levels = c("RHMA","LARA")),
+    treatment = factor(treatment),
+    site      = factor(site)
+  )
+
+# Traits present in both species that are sensibly comparable
+shared_traits <- c("mass", "total_size")
+
+# Save a quick glimpse
+skim_tbl <- intake_all %>% glimpse()
+```
+
+
+# 2) QC: Outlier flags & sanity checks
+
+```{r qc}
+qc_long <- intake_all %>%
+  pivot_longer(all_of(shared_traits), names_to = "trait", values_to = "value") %>%
+  group_by(species, trait) %>%
+  mutate(
+    iqr = IQR(value, na.rm = TRUE),
+    Q1 = quantile(value, 0.25, na.rm = TRUE),
+    Q3 = quantile(value, 0.75, na.rm = TRUE),
+    lower = Q1 - 3*iqr,
+    upper = Q3 + 3*iqr,
+    is_extreme = value < lower | value > upper
+  ) %>%
+  ungroup() %>%
+  filter(is_extreme & !is.na(value)) %>%
+  arrange(trait, species, desc(value))
+
+readr::write_csv(qc_long, file.path(params$out_dir, "qc_flagged_extremes_shared_traits.csv"))
+
+head(qc_long, 20)
+```
+
+
+# 3) Summaries (Species × Treatment × Site)
+
+```{r summaries}
+cont_summary <- intake_all %>%
+  pivot_longer(all_of(shared_traits), names_to = "trait", values_to = "value") %>%
+  group_by(species, site, treatment, trait) %>%
+  summarise(n = sum(!is.na(value)), mean = mean(value, na.rm = TRUE), sd = sd(value, na.rm = TRUE), se = sd/sqrt(n), .groups = "drop") %>%
+  mutate(mean_sd = sprintf("%.2f ± %.2f", mean, sd))
+
+knitr::kable(cont_summary %>% arrange(trait, species, site, treatment), caption = "Continuous summaries for shared traits (mass, total_size)")
+
+readr::write_csv(cont_summary, file.path(params$out_dir, "summary_shared_traits_by_species_site_treatment.csv"))
+```
+
+
+# 4) Assumption checks (residual normality & variance homogeneity)
+
+```{r assumptions}
+# Check residual normality for a 2-way interaction (+site) model per trait
+check_assumptions <- function(dat, trait){
+  df <- dat %>% select(all_of(c("species","treatment","site", trait))) %>% drop_na()
+  if(nrow(df) < 10) return(tibble(trait = trait, shapiro_resid_p = NA_real_, levene_p = NA_real_, n = nrow(df)))
+  fit <- lm(reformulate(c("species*treatment", "species:site", "treatment:site"), response = trait), data = df)
+  sh <- tryCatch(shapiro.test(residuals(fit))$p.value, error = function(e) NA_real_)
+  # Levene across all groups (species×treatment×site)
+  grp <- interaction(df$species, df$treatment, df$site, drop = TRUE)
+  lv <- tryCatch(car::leveneTest(df[[trait]] ~ grp)$`Pr(>F)`[1], error = function(e) NA_real_)
+  tibble(trait = trait, shapiro_resid_p = sh, levene_p = lv, n = nrow(df))
+}
+
+assump_tbl <- map_dfr(shared_traits, ~ check_assumptions(intake_all, .x)) %>%
+  mutate(
+    normality_flag   = case_when(is.na(shapiro_resid_p) ~ NA_character_, shapiro_resid_p < 0.05 ~ "Not normal", TRUE ~ "OK"),
+    homogeneity_flag = case_when(is.na(levene_p) ~ NA_character_, levene_p   < 0.05 ~ "Unequal var", TRUE ~ "OK")
+  )
+
+knitr::kable(assump_tbl, digits = 4, caption = "Assumption checks for shared traits")
+
+readr::write_csv(assump_tbl, file.path(params$out_dir, "assumption_checks_shared_traits.csv"))
+```
+
+
+# 5) Linear Models (all 2-way interactions) + EMMs
+
+```{r models-emm}
+run_models <- function(dat, trait){
+  df <- dat %>% select(species, treatment, site, value = all_of(trait)) %>% drop_na()
+  if(nrow(df) < 10) return(NULL)
+  fit <- lm(value ~ species * treatment + species:site + treatment:site, data = df)
+
+  # Type II ANOVA (balanced when interactions present)
+  anova_tbl <- broom::tidy(car::Anova(fit, type = 2)) %>% mutate(trait = trait, .before = 1)
+
+  # EMMs
+  emm_species_by_trt <- emmeans::emmeans(fit, specs = ~ species | treatment, weights = "proportional")
+  emm_trt_by_species <- emmeans::emmeans(fit, specs = ~ treatment | species, weights = "proportional")
+  emm_site_by_species <- emmeans::emmeans(fit, specs = ~ site | species, weights = "proportional")
+
+  list(
+    fit = fit,
+    anova = anova_tbl,
+    pairs_species_by_trt = broom::tidy(pairs(emm_species_by_trt, adjust = "tukey")) %>% mutate(trait = trait),
+    pairs_trt_by_species = broom::tidy(pairs(emm_trt_by_species, adjust = "tukey")) %>% mutate(trait = trait),
+    pairs_site_by_species = broom::tidy(pairs(emm_site_by_species, adjust = "tukey")) %>% mutate(trait = trait),
+    emm_species_by_trt = broom::tidy(emm_species_by_trt) %>% mutate(trait = trait),
+    emm_trt_by_species = broom::tidy(emm_trt_by_species) %>% mutate(trait = trait),
+    emm_site_by_species = broom::tidy(emm_site_by_species) %>% mutate(trait = trait)
+  )
+}
+
+model_outputs <- map(shared_traits, ~ run_models(intake_all, .x))
+
+anova_all <- bind_rows(map(model_outputs, ~ .x$anova))
+pairs_species_by_trt <- bind_rows(map(model_outputs, ~ .x$pairs_species_by_trt))
+pairs_trt_by_species <- bind_rows(map(model_outputs, ~ .x$pairs_trt_by_species))
+pairs_site_by_species <- bind_rows(map(model_outputs, ~ .x$pairs_site_by_species))
+emm_species_by_trt <- bind_rows(map(model_outputs, ~ .x$emm_species_by_trt))
+emm_trt_by_species <- bind_rows(map(model_outputs, ~ .x$emm_trt_by_species))
+emm_site_by_species <- bind_rows(map(model_outputs, ~ .x$emm_site_by_species))
+
+# Save tables
+readr::write_csv(anova_all,              file.path(params$out_dir, "anova_shared_traits_type2.csv"))
+readr::write_csv(pairs_species_by_trt,   file.path(params$out_dir, "pairs_species_within_treatment.csv"))
+readr::write_csv(pairs_trt_by_species,   file.path(params$out_dir, "pairs_treatment_within_species.csv"))
+readr::write_csv(pairs_site_by_species,  file.path(params$out_dir, "pairs_site_within_species.csv"))
+readr::write_csv(emm_species_by_trt,     file.path(params$out_dir, "emm_species_by_treatment.csv"))
+readr::write_csv(emm_trt_by_species,     file.path(params$out_dir, "emm_treatment_by_species.csv"))
+readr::write_csv(emm_site_by_species,    file.path(params$out_dir, "emm_site_by_species.csv"))
+
+# Compact reporting table (stars) for ANOVA
+report_anova <- anova_all %>%
+  filter(!term %in% c("Residuals")) %>%
+  mutate(term = case_match(term,
+                           "species" ~ "Species",
+                           "treatment" ~ "Treatment",
+                           "species:treatment" ~ "Species×Treatment",
+                           "species:site" ~ "Species×Site",
+                           "treatment:site" ~ "Treatment×Site",
+                           "site" ~ "Site",
+                           .default = term)) %>%
+  transmute(trait, term, p.value, sig = case_when(
+    p.value < 0.001 ~ "***",
+    p.value < 0.01  ~ "**",
+    p.value < 0.05  ~ "*",
+    is.na(p.value)  ~ NA_character_,
+    TRUE ~ "ns"
+  )) %>% arrange(trait, term)
+
+knitr::kable(report_anova, caption = "Type II ANOVA: shared traits (stars show significance)")
+```
+
+
+# 6) Nonparametric site-wise checks (if assumptions flagged)
+
+```{r nonparam}
+needs_nonparam <- any(assump_tbl$shapiro_resid_p < 0.05, na.rm = TRUE) || any(assump_tbl$levene_p < 0.05, na.rm = TRUE)
+if (needs_nonparam) {
+  message("Assumptions flagged for at least one shared trait; adding Kruskal–Wallis + Dunn site-wise checks.")
+}
+
+if (needs_nonparam) {
+  # Per species × site: Do treatments differ?
+  kw_all <- map_dfr(shared_traits, function(tr){
+    df <- intake_all %>% select(species, site, treatment, value = all_of(tr)) %>% drop_na()
+    map_dfr(unique(df$species), function(sp){
+      sdf <- df %>% filter(species == sp)
+      map_dfr(unique(sdf$site), function(si){
+        sub <- sdf %>% filter(site == si)
+        if(n_distinct(sub$treatment) > 1) {
+          kw <- kruskal.test(value ~ treatment, data = sub)
+          tibble(trait = tr, species = sp, site = si, statistic = unname(kw$statistic), p_value = kw$p.value)
+        } else tibble(trait = tr, species = sp, site = si, statistic = NA_real_, p_value = NA_real_)
+      })
+    })
+  })
+
+  # Dunn posthoc
+  dunn_all <- map_dfr(shared_traits, function(tr){
+    df <- intake_all %>% select(species, site, treatment, value = all_of(tr)) %>% drop_na()
+    map_dfr(unique(df$species), function(sp){
+      sdf <- df %>% filter(species == sp)
+      map_dfr(unique(sdf$site), function(si){
+        sub <- sdf %>% filter(site == si)
+        if(n_distinct(sub$treatment) > 1) {
+          out <- suppressWarnings(FSA::dunnTest(value ~ treatment, data = sub, method = "bonferroni")$res)
+          out$trait <- tr; out$species <- sp; out$site <- si
+          as_tibble(out)
+        } else tibble()
+      })
+    })
+  })
+
+  readr::write_csv(kw_all,   file.path(params$out_dir, "nonparam_kruskal_sitewise_shared_traits.csv"))
+  readr::write_csv(dunn_all, file.path(params$out_dir, "nonparam_dunn_sitewise_shared_traits.csv"))
+
+  knitr::kable(head(kw_all, 10), caption = "Kruskal–Wallis (head)")
+  knitr::kable(head(dunn_all, 10), caption = "Dunn posthoc (head)")
+}
+```
+
+
+# 7) Plots (shared traits)
+
+```{r plots-shared, fig.width=10, fig.height=7}
+# Box/jitter by treatment with species fill, faceted by site
+p_box <- intake_all %>%
+  pivot_longer(all_of(shared_traits), names_to = "trait", values_to = "value") %>%
+  ggplot(aes(x = treatment, y = value, fill = species)) +
+  geom_boxplot(outlier.alpha = 0.5, position = position_dodge(width = 0.9)) +
+  geom_jitter(aes(group = species), width = 0.15, alpha = 0.35, size = 1, position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.9)) +
+  facet_grid(trait ~ site, scales = "free_y") +
+  scale_fill_manual(values = okabe_ito[c(2,7)]) +
+  labs(title = "Shared intake traits by Treatment (faceted by Site)", x = "Treatment (initial substrate)", y = "Value", fill = "Species") +
+  theme_bw(base_size = 12)
+
+p_box
+
+ggsave(file.path(params$out_dir, "plots_shared_traits_box_by_site.png"), p_box, dpi = 300, width = 11, height = 7)
+```
+
+```{r plots-emm, fig.width=10, fig.height=6}
+# EMMs: Species differences within each treatment (averaged across sites)
+emm_plot_list <- map(model_outputs, function(mo){
+  if (is.null(mo)) return(NULL)
+  df <- mo$emm_species_by_trt %>%
+    mutate(trait = unique(mo$emm_species_by_trt$trait))
+  ggplot(df, aes(x = treatment, y = emmean, group = species)) +
+    geom_point(position = position_dodge(width = 0.5)) +
+    geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.15, position = position_dodge(width = 0.5)) +
+    geom_line(position = position_dodge(width = 0.5)) +
+    facet_wrap(~ trait, scales = "free_y") +
+    labs(title = "Estimated marginal means (Species within Treatment)", x = "Treatment", y = "EMMean") +
+    theme_bw(base_size = 12)
+})
+
+# Print first two to keep doc concise
+if (length(emm_plot_list) > 0 && !is.null(emm_plot_list[[1]])) print(emm_plot_list[[1]])
+```
+
+
+# 8) Species-specific add-ons (original traits per group)
+
+## 8.1 RHMA-only traits
+```{r rhma-only}
+rhma_only <- rhma_std %>% select(prop_id, site, treatment, species, diameter, epi_length, hypo_length, total_height, mass)
+
+# Quick summaries
+rhma_cont_summary <- rhma_only %>%
+  pivot_longer(c(diameter, epi_length, hypo_length, total_height, mass), names_to = "trait", values_to = "value") %>%
+  group_by(site, treatment, trait) %>% summarise(n = sum(!is.na(value)), mean = mean(value, na.rm = TRUE), sd = sd(value, na.rm = TRUE), .groups = "drop")
+
+knitr::kable(rhma_cont_summary %>% arrange(trait, site, treatment), caption = "RHMA trait summaries by Site × Treatment")
+
+# Site-wise Kruskal for non-normal distributions
+kw_rhma <- map_dfr(c("diameter","epi_length","hypo_length","total_height","mass"), function(tr){
+  df <- rhma_only %>% select(site, treatment, value = all_of(tr)) %>% drop_na()
+  map_dfr(unique(df$site), function(si){
+    sub <- df %>% filter(site == si)
+    if(n_distinct(sub$treatment) > 1) {
+      kw <- kruskal.test(value ~ treatment, data = sub)
+      tibble(trait = tr, site = si, statistic = unname(kw$statistic), p_value = kw$p.value)
+    } else tibble(trait = tr, site = si, statistic = NA_real_, p_value = NA_real_)
+  })
+})
+
+knitr::kable(head(kw_rhma, 10), caption = "RHMA Kruskal–Wallis (head)")
+```
+
+## 8.2 LARA-only traits
+```{r lara-only}
+lara_only <- lara_std %>% select(prop_id, site, treatment, species, width, prop_length, rad_length, total_length, mass, seed_color)
+
+# Summaries
+lara_cont_summary <- lara_only %>%
+  pivot_longer(c(width, prop_length, rad_length, total_length, mass), names_to = "trait", values_to = "value") %>%
+  group_by(site, treatment, trait) %>% summarise(n = sum(!is.na(value)), mean = mean(value, na.rm = TRUE), sd = sd(value, na.rm = TRUE), .groups = "drop")
+
+knitr::kable(lara_cont_summary %>% arrange(trait, site, treatment), caption = "LARA trait summaries by Site × Treatment")
+
+# Seed color × site/treatment (chi-square)
+chi_site <- tryCatch({
+  tab <- lara_only %>% count(site, seed_color) %>% pivot_wider(names_from = seed_color, values_from = n, values_fill = 0)
+  chisq.test(as.matrix(tab[,-1]))
+}, error = function(e) NULL)
+
+chi_trt <- tryCatch({
+  tab <- lara_only %>% count(treatment, seed_color) %>% pivot_wider(names_from = seed_color, values_from = n, values_fill = 0)
+  chisq.test(as.matrix(tab[,-1]))
+}, error = function(e) NULL)
+
+chi_tbl <- tibble(
+  comparison = c("Seed color across Site", "Seed color across Treatment"),
+  statistic  = c(if(!is.null(chi_site)) chi_site$statistic else NA_real_, if(!is.null(chi_trt)) chi_trt$statistic else NA_real_),
+  df         = c(if(!is.null(chi_site)) chi_site$parameter else NA_real_, if(!is.null(chi_trt)) chi_trt$parameter else NA_real_),
+  p_value    = c(if(!is.null(chi_site)) chi_site$p.value else NA_real_, if(!is.null(chi_trt)) chi_trt$p.value else NA_real_)
+)
+
+knitr::kable(chi_tbl, caption = "LARA seed color chi-square tests")
+```
+
+
+# 9) Compact narrative summary (auto)
+
+```{r summary-text, results='asis'}
+# Simple narrative driven by ANOVA stars for the shared traits
+suppressWarnings({
+  narrative <- report_anova %>%
+    group_by(trait) %>%
+    summarise(
+      highlights = paste0(
+        trait, ": ",
+        paste0(term, " (p=", scales::pvalue(p.value), ", ", sig, ")", collapse = "; ")
+      ), .groups = "drop")
+})
+
+cat("**Highlights (shared traits)**\n\n")
+for (i in seq_len(nrow(narrative))) cat("- ", narrative$highlights[i], "\n", sep = "")
+```
+
+
+# 10) Session info & Reproducibility
+
+```{r session}
+writeLines(capture.output(sessionInfo()), file.path(params$out_dir, "sessionInfo.txt"))
+sessionInfo()
+```
+
+
+
+
+---
+title: "Intake Comparisons: RHMA & LARA (Species × Treatment × Site)"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    number_sections: true
+params:
+  out_dir:  "intake_outputs"
+---
+
+# 0) Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 9, fig.height = 6)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(lubridate)
+  library(janitor)
+  library(broom)
+  library(emmeans)
+  library(car)     # Type II/III Anova; Levene
+  library(FSA)     # Dunn's test
+})
+
+set.seed(20250901)
+
+# Output dir
+if (!dir.exists(params$out_dir)) dir.create(params$out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Colorblind-friendly palette
+okabe_ito <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#999999")
+
+# Robust MDY parser (handles 10/25/24 or 10/25/2024 and with optional times)
+parse_mdy_relaxed <- function(x) suppressWarnings(parse_date_time(x, orders = c("mdy", "mdy HM", "mdy HMS")))
+```
+
+**Guiding questions**  
+**Q1.** Intake differences between species (RHMA vs LARA)?  
+**Q2.** Do initial substrates/treatments differ at intake?  
+**Q3.** Are there site differences, and do they modify species/treatment effects?  
+
+---
+
+# 1. RHMA Intake
+
+## 1.1 Read & Clean (hard-coded path)
+```{r rhma-clean}
+rhma_raw <- readr::read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/RHMA_IntakeData.csv", show_col_types = FALSE) %>% clean_names()
+
+rhma1 <- rhma_raw %>%
+  mutate(
+    intake_date = parse_mdy_relaxed(intake_date),
+    collection_date = {cd <- stringr::str_extract(collection_date, "\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b"); parse_mdy_relaxed(cd)},
+    site      = str_squish(as.character(site)),
+    species   = "RHMA",
+    treatment = str_squish(as.character(treatment)),
+    hypo_color = str_squish(as.character(hypo_color)),
+    roots      = str_squish(as.character(roots))
+  )
+
+num_cols_rhma <- c("diameter","epi_length","hypo_length","total_height","mass","rhma_height_1","rhma_height_2")
+
+rhma2 <- rhma1 %>%
+  mutate(across(all_of(num_cols_rhma), ~ suppressWarnings(as.numeric(str_replace_all(.x, ",", ""))))) %>%
+  filter(!is.na(intake_date)) %>%
+  arrange(prop_id, intake_date) %>%
+  group_by(prop_id) %>% slice(1) %>% ungroup()
+
+glimpse(rhma2)
+```
+
+## 1.2 QC flags
+```{r rhma-qc}
+rhma_qc_outliers <- rhma2 %>%
+  pivot_longer(all_of(num_cols_rhma), names_to = "trait", values_to = "value") %>%
+  group_by(trait) %>%
+  mutate(
+    iqr = IQR(value, na.rm = TRUE),
+    Q1  = quantile(value, 0.25, na.rm = TRUE),
+    Q3  = quantile(value, 0.75, na.rm = TRUE),
+    lower = Q1 - 3*iqr,
+    upper = Q3 + 3*iqr,
+    is_extreme = value < lower | value > upper
+  ) %>%
+  ungroup() %>%
+  filter(is_extreme & !is.na(value)) %>%
+  arrange(trait, desc(value))
+
+head(rhma_qc_outliers, 20)
+# readr::write_csv(rhma_qc_outliers, file.path(params$out_dir, "rhma_qc_flagged_values.csv"))
+```
+
+## 1.3 Summaries (by Site × Treatment)
+```{r rhma-summaries}
+rhma_cont_summary <- rhma2 %>%
+  pivot_longer(all_of(num_cols_rhma), names_to = "trait", values_to = "value") %>%
+  group_by(site, treatment, trait) %>%
+  summarise(n = sum(!is.na(value)), mean = mean(value, na.rm = TRUE), sd = sd(value, na.rm = TRUE), se = sd/sqrt(n), .groups = "drop") %>%
+  mutate(mean_sd = sprintf("%.2f ± %.2f", mean, sd))
+
+knitr::kable(rhma_cont_summary %>% arrange(trait, site, treatment), caption = "RHMA continuous traits: mean ± sd by Site × Treatment")
+# readr::write_csv(rhma_cont_summary, file.path(params$out_dir, "rhma_continuous_summary_by_site_treatment.csv"))
+```
+
+## 1.4 Assumptions (per-trait residual normality & Levene)
+```{r rhma-assumptions}
+check_norm_homo <- function(data, traits, group_vars = c("site","treatment")){
+  purrr::map_dfr(traits, function(tr){
+    df <- data %>% select(all_of(c(group_vars, tr))) %>% drop_na()
+    if (nrow(df) < 8) return(tibble(trait = tr, shapiro_resid_p = NA_real_, levene_p = NA_real_))
+    f <- lm(reformulate(paste(group_vars, collapse = "*"), response = tr), data = df)
+    shp <- tryCatch(shapiro.test(residuals(f))$p.value, error = function(e) NA_real_)
+    lev <- tryCatch(car::leveneTest(df[[tr]] ~ interaction(df[[group_vars[1]]], df[[group_vars[2]]]))$`Pr(>F)`[1], error = function(e) NA_real_)
+    tibble(trait = tr, shapiro_resid_p = shp, levene_p = lev)
+  })
+}
+
+rhma_assump <- check_norm_homo(rhma2, num_cols_rhma) %>%
+  mutate(normality = if_else(shapiro_resid_p < 0.05, "Not normal", "OK"), homogeneity = if_else(levene_p < 0.05, "Unequal var", "OK"))
+
+knitr::kable(rhma_assump, digits = 4, caption = "RHMA: assumption checks")
+# readr::write_csv(rhma_assump, file.path(params$out_dir, "rhma_assumption_checks.csv"))
+```
+
+## 1.5 Hypothesis tests (ANOVA + EMMs; fallback to Kruskal/Dunn site-wise)
+```{r rhma-tests}
+cont_traits_rhma <- c("diameter","epi_length","hypo_length","total_height","mass")
+
+# Parametric: site × treatment for each trait
+rhma_anova <- purrr::map_dfr(cont_traits_rhma, function(tr){
+  df <- rhma2 %>% select(site, treatment, !!sym(tr)) %>% drop_na()
+  if(nrow(df) < 8 || n_distinct(df$treatment) < 2) return(tibble(trait = tr, term = NA, p.value = NA))
+  fit <- lm(reformulate(c("site","treatment","site:treatment"), response = tr), data = df)
+  broom::tidy(anova(fit)) %>% mutate(trait = tr)
+})
+
+# EMMs: treatment within site
+rhma_emm_trt_by_site <- purrr::map_dfr(cont_traits_rhma, function(tr){
+  df <- rhma2 %>% select(site, treatment, !!sym(tr)) %>% drop_na(); if(nrow(df) < 8) return(tibble())
+  fit <- lm(reformulate(c("site","treatment","site:treatment"), response = tr), data = df)
+  as_tibble(summary(emmeans(fit, ~ treatment | site))) %>% mutate(trait = tr)
+})
+
+# Nonparam: Kruskal + Dunn per site (if any assumption flags)
+needs_np <- any(rhma_assump$shapiro_resid_p < 0.05, na.rm = TRUE) || any(rhma_assump$levene_p < 0.05, na.rm = TRUE)
+if (needs_np){
+  kw_rhma <- purrr::map_dfr(cont_traits_rhma, function(tr){
+    df <- rhma2 %>% select(site, treatment, !!sym(tr)) %>% drop_na()
+    purrr::map_dfr(unique(df$site), function(si){
+      sub <- df %>% filter(site == si)
+      if(n_distinct(sub$treatment) > 1){kw <- kruskal.test(reformulate("treatment", tr), data = sub); tibble(trait = tr, site = si, statistic = unname(kw$statistic), p_value = kw$p.value)} else tibble()
+    })
+  })
+  dunn_rhma <- purrr::map_dfr(cont_traits_rhma, function(tr){
+    df <- rhma2 %>% select(site, treatment, !!sym(tr)) %>% drop_na()
+    purrr::map_dfr(unique(df$site), function(si){
+      sub <- df %>% filter(site == si)
+      if(n_distinct(sub$treatment) > 1){out <- suppressWarnings(FSA::dunnTest(reformulate("treatment", tr), data = sub, method = "bonferroni")$res); out$trait <- tr; out$site <- si; as_tibble(out)} else tibble()
+    })
+  })
+  # Optional writes:
+  # readr::write_csv(kw_rhma,   file.path(params$out_dir, "rhma_kw_sitewise.csv"))
+  # readr::write_csv(dunn_rhma, file.path(params$out_dir, "rhma_dunn_sitewise.csv"))
+}
+
+knitr::kable(rhma_anova %>% filter(!is.na(p.value)) %>% select(trait, term, p.value) %>% arrange(trait, term), caption = "RHMA ANOVA (site × treatment)")
+```
+
+## 1.6 Plots
+```{r rhma-plots}
+p_rhma <- rhma2 %>%
+  pivot_longer(c(total_height, diameter, mass), names_to = "trait", values_to = "value") %>%
+  ggplot(aes(x = treatment, y = value)) +
+  geom_boxplot(outlier.alpha = 0.5) +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 1) +
+  facet_grid(trait ~ site, scales = "free_y") +
+  labs(x = "Treatment", y = "Value", title = "RHMA: intake trait distributions by Treatment (faceted by Site)") +
+  theme_bw(base_size = 12)
+
+p_rhma
+# ggsave(file.path(params$out_dir, "rhma_boxplots.png"), p_rhma, dpi = 300, width = 10, height = 7)
+```
+
+---
+
+# 2. LARA Intake
+
+## 2.1 Read & Clean (hard-coded path)
+```{r lara-clean}
+lara_raw <- readr::read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/LARA_IntakeData.csv", show_col_types = FALSE) %>% clean_names()
+
+lara1 <- lara_raw %>%
+  mutate(
+    prop_id = coalesce(.data$prop_id),
+    site      = str_squish(as.character(site)),
+    species   = "LARA",
+    treatment = str_squish(as.character(treatment)),
+    seed_color = str_squish(as.character(seed_color))
+  ) %>%
+  mutate(
+    intake_date = parse_mdy_relaxed(intake_date),
+    collection_date = {cd <- stringr::str_extract(collection_date, "\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b"); parse_mdy_relaxed(cd)}
+  )
+
+num_cols_lara <- c("width","prop_length","rad_length","total_length","mass")
+
+lara2 <- lara1 %>%
+  mutate(across(all_of(num_cols_lara), ~ suppressWarnings(as.numeric(str_replace_all(.x, ",", ""))))) %>%
+  filter(!is.na(intake_date)) %>%
+  arrange(prop_id, intake_date) %>%
+  group_by(prop_id) %>% slice(1) %>% ungroup()
+
+glimpse(lara2)
+```
+
+## 2.2 QC flags
+```{r lara-qc}
+lara_qc_outliers <- lara2 %>%
+  pivot_longer(all_of(num_cols_lara), names_to = "trait", values_to = "value") %>%
+  group_by(trait) %>%
+  mutate(
+    iqr = IQR(value, na.rm = TRUE),
+    Q1  = quantile(value, 0.25, na.rm = TRUE),
+    Q3  = quantile(value, 0.75, na.rm = TRUE),
+    lower = Q1 - 3*iqr,
+    upper = Q3 + 3*iqr,
+    is_extreme = value < lower | value > upper
+  ) %>% ungroup() %>% filter(is_extreme & !is.na(value)) %>% arrange(trait, desc(value))
+
+head(lara_qc_outliers, 20)
+# readr::write_csv(lara_qc_outliers, file.path(params$out_dir, "lara_qc_flagged_values.csv"))
+```
+
+## 2.3 Summaries (by Site × Treatment)
+```{r lara-summaries}
+lara_cont_summary <- lara2 %>%
+  pivot_longer(all_of(num_cols_lara), names_to = "trait", values_to = "value") %>%
+  group_by(site, treatment, trait) %>%
+  summarise(n = sum(!is.na(value)), mean = mean(value, na.rm = TRUE), sd = sd(value, na.rm = TRUE), se = sd/sqrt(n), .groups = "drop") %>%
+  mutate(mean_sd = sprintf("%.2f ± %.2f", mean, sd))
+
+knitr::kable(lara_cont_summary %>% arrange(trait, site, treatment), caption = "LARA continuous traits by Site × Treatment")
+# readr::write_csv(lara_cont_summary, file.path(params$out_dir, "lara_continuous_summary_by_site_treatment.csv"))
+```
+
+## 2.4 Assumptions
+```{r lara-assumptions}
+lara_assump <- check_norm_homo(lara2, num_cols_lara)
+lara_assump <- lara_assump %>% mutate(normality = if_else(shapiro_resid_p < 0.05, "Not normal", "OK"), homogeneity = if_else(levene_p < 0.05, "Unequal var", "OK"))
+knitr::kable(lara_assump, digits = 4, caption = "LARA: assumption checks")
+```
+
+## 2.5 Hypothesis tests (ANOVA + EMMs; fallback to Kruskal/Dunn site-wise)
+```{r lara-tests}
+cont_traits_lara <- c("width","prop_length","rad_length","total_length","mass")
+
+lara_anova <- purrr::map_dfr(cont_traits_lara, function(tr){
+  df <- lara2 %>% select(site, treatment, !!sym(tr)) %>% drop_na()
+  if(nrow(df) < 8 || n_distinct(df$treatment) < 2) return(tibble(trait = tr, term = NA, p.value = NA))
+  fit <- lm(reformulate(c("site","treatment","site:treatment"), response = tr), data = df)
+  broom::tidy(anova(fit)) %>% mutate(trait = tr)
+})
+
+lara_emm_trt_by_site <- purrr::map_dfr(cont_traits_lara, function(tr){
+  df <- lara2 %>% select(site, treatment, !!sym(tr)) %>% drop_na(); if(nrow(df) < 8) return(tibble())
+  fit <- lm(reformulate(c("site","treatment","site:treatment"), response = tr), data = df)
+  as_tibble(summary(emmeans(fit, ~ treatment | site))) %>% mutate(trait = tr)
+})
+
+needs_np_lara <- any(lara_assump$shapiro_resid_p < 0.05, na.rm = TRUE) || any(lara_assump$levene_p < 0.05, na.rm = TRUE)
+if (needs_np_lara){
+  kw_lara <- purrr::map_dfr(cont_traits_lara, function(tr){
+    df <- lara2 %>% select(site, treatment, !!sym(tr)) %>% drop_na()
+    purrr::map_dfr(unique(df$site), function(si){
+      sub <- df %>% filter(site == si)
+      if(n_distinct(sub$treatment) > 1){kw <- kruskal.test(reformulate("treatment", tr), data = sub); tibble(trait = tr, site = si, statistic = unname(kw$statistic), p_value = kw$p.value)} else tibble()
+    })
+  })
+  dunn_lara <- purrr::map_dfr(cont_traits_lara, function(tr){
+    df <- lara2 %>% select(site, treatment, !!sym(tr)) %>% drop_na()
+    purrr::map_dfr(unique(df$site), function(si){
+      sub <- df %>% filter(site == si)
+      if(n_distinct(sub$treatment) > 1){out <- suppressWarnings(FSA::dunnTest(reformulate("treatment", tr), data = sub, method = "bonferroni")$res); out$trait <- tr; out$site <- si; as_tibble(out)} else tibble()
+    })
+  })
+  # Optional writes:
+  # readr::write_csv(kw_lara,   file.path(params$out_dir, "lara_kw_sitewise.csv"))
+  # readr::write_csv(dunn_lara, file.path(params$out_dir, "lara_dunn_sitewise.csv"))
+}
+
+knitr::kable(lara_anova %>% filter(!is.na(p.value)) %>% select(trait, term, p.value) %>% arrange(trait, term), caption = "LARA ANOVA (site × treatment)")
+```
+
+## 2.6 Plots
+```{r lara-plots}
+p_lara <- lara2 %>%
+  pivot_longer(c(total_length, prop_length, rad_length, width, mass), names_to = "trait", values_to = "value") %>%
+  ggplot(aes(x = treatment, y = value)) +
+  geom_boxplot(outlier.alpha = 0.5) +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 1) +
+  facet_grid(trait ~ site, scales = "free_y") +
+  labs(x = "Treatment", y = "Value", title = "LARA: intake traits by Treatment (faceted by Site)") +
+  theme_bw(base_size = 12)
+
+p_lara
+# ggsave(file.path(params$out_dir, "lara_boxplots.png"), p_lara, dpi = 300, width = 10, height = 7)
+```
+
+---
+
+# 3. Combined RHMA + LARA (Species × Treatment × Site)
+
+## 3.1 Build comparable shared traits
+```{r combined-build}
+# Standardize to shared metrics: mass + total_size (RHMA total_height; LARA total_length)
+
+rhma_std <- rhma2 %>% mutate(total_size = total_height, width_diam = diameter, part1_length = epi_length, part2_length = hypo_length) %>%
+  select(prop_id, species, site, treatment, mass, total_size, width_diam, part1_length, part2_length)
+
+lara_std <- lara2 %>% mutate(total_size = total_length, width_diam = width, part1_length = prop_length, part2_length = rad_length) %>%
+  select(prop_id, species, site, treatment, mass, total_size, width_diam, part1_length, part2_length)
+
+intake_all <- bind_rows(rhma_std, lara_std) %>%
+  mutate(species = factor(species, levels = c("RHMA","LARA")), treatment = factor(treatment), site = factor(site))
+
+shared_traits <- c("mass","total_size")
+
+glimpse(intake_all)
+```
+
+## 3.2 Summaries (Species × Treatment × Site)
+```{r combined-summaries}
+cont_summary_all <- intake_all %>%
+  pivot_longer(all_of(shared_traits), names_to = "trait", values_to = "value") %>%
+  group_by(species, site, treatment, trait) %>%
+  summarise(n = sum(!is.na(value)), mean = mean(value, na.rm = TRUE), sd = sd(value, na.rm = TRUE), se = sd/sqrt(n), .groups = "drop") %>%
+  mutate(mean_sd = sprintf("%.2f ± %.2f", mean, sd))
+
+knitr::kable(cont_summary_all %>% arrange(trait, species, site, treatment), caption = "Shared traits (mass, total_size): Species × Treatment × Site")
+# readr::write_csv(cont_summary_all, file.path(params$out_dir, "summary_shared_traits_by_species_site_treatment.csv"))
+```
+
+## 3.3 Assumptions (combined model)
+```{r combined-assumptions}
+check_assumptions_combined <- function(dat, trait){
+  df <- dat %>% select(species, treatment, site, value = all_of(trait)) %>% drop_na()
+  if(nrow(df) < 12) return(tibble(trait = trait, shapiro_resid_p = NA_real_, levene_p = NA_real_))
+  fit <- lm(value ~ species * treatment + species:site + treatment:site, data = df)
+  sh <- tryCatch(shapiro.test(residuals(fit))$p.value, error = function(e) NA_real_)
+  grp <- interaction(df$species, df$treatment, df$site, drop = TRUE)
+  lv <- tryCatch(car::leveneTest(df$value ~ grp)$`Pr(>F)`[1], error = function(e) NA_real_)
+  tibble(trait = trait, shapiro_resid_p = sh, levene_p = lv)
+}
+
+assump_combined <- purrr::map_dfr(shared_traits, ~ check_assumptions_combined(intake_all, .x)) %>%
+  mutate(normality = if_else(shapiro_resid_p < 0.05, "Not normal", "OK"), homogeneity = if_else(levene_p < 0.05, "Unequal var", "OK"))
+
+knitr::kable(assump_combined, digits = 4, caption = "Combined model: assumption checks")
+# readr::write_csv(assump_combined, file.path(params$out_dir, "assumption_checks_shared_traits.csv"))
+```
+
+## 3.4 Models + EMMs (answers Q1–Q3)
+```{r combined-models}
+run_models <- function(dat, trait){
+  df <- dat %>% select(species, treatment, site, value = all_of(trait)) %>% drop_na(); if(nrow(df) < 12) return(NULL)
+  fit <- lm(value ~ species * treatment + species:site + treatment:site, data = df)
+  anova_tbl <- broom::tidy(car::Anova(fit, type = 2)) %>% mutate(trait = trait, .before = 1)
+  emm_s_by_t <- emmeans(fit, ~ species | treatment, weights = "proportional")
+  emm_t_by_s <- emmeans(fit, ~ treatment | species, weights = "proportional")
+  emm_site_by_s <- emmeans(fit, ~ site | species, weights = "proportional")
+  list(
+    anova = anova_tbl,
+    pairs_s_by_t = broom::tidy(pairs(emm_s_by_t, adjust = "tukey")) %>% mutate(trait = trait),
+    pairs_t_by_s = broom::tidy(pairs(emm_t_by_s, adjust = "tukey")) %>% mutate(trait = trait),
+    pairs_site_by_s = broom::tidy(pairs(emm_site_by_s, adjust = "tukey")) %>% mutate(trait = trait),
+    emm_s_by_t = broom::tidy(emm_s_by_t) %>% mutate(trait = trait)
+  )
+}
+
+mods <- purrr::map(shared_traits, ~ run_models(intake_all, .x))
+
+anova_all <- bind_rows(purrr::map(mods, ~ .x$anova))
+pairs_s_by_t <- bind_rows(purrr::map(mods, ~ .x$pairs_s_by_t))
+pairs_t_by_s <- bind_rows(purrr::map(mods, ~ .x$pairs_t_by_s))
+pairs_site_by_s <- bind_rows(purrr::map(mods, ~ .x$pairs_site_by_s))
+emm_s_by_t <- bind_rows(purrr::map(mods, ~ .x$emm_s_by_t))
+
+# Save
+# readr::write_csv(anova_all,             file.path(params$out_dir, "anova_shared_traits_type2.csv"))
+# readr::write_csv(pairs_s_by_t,          file.path(params$out_dir, "pairs_species_within_treatment.csv"))
+# readr::write_csv(pairs_t_by_s,          file.path(params$out_dir, "pairs_treatment_within_species.csv"))
+# readr::write_csv(pairs_site_by_s,       file.path(params$out_dir, "pairs_site_within_species.csv"))
+# readr::write_csv(emm_s_by_t,            file.path(params$out_dir, "emm_species_by_treatment.csv"))
+
+report_anova <- anova_all %>% filter(!term %in% c("Residuals")) %>% mutate(term = dplyr::case_match(term,
+  "species" ~ "Species",
+  "treatment" ~ "Treatment",
+  "species:treatment" ~ "Species×Treatment",
+  "species:site" ~ "Species×Site",
+  "treatment:site" ~ "Treatment×Site",
+  "site" ~ "Site",
+  .default = term
+)) %>% transmute(trait, term, p.value, sig = case_when(p.value < 0.001 ~ "***", p.value < 0.01 ~ "**", p.value < 0.05 ~ "*", TRUE ~ "ns")) %>% arrange(trait, term)
+
+knitr::kable(report_anova, caption = "Type II ANOVA (shared traits): significance summary")
+```
+
+## 3.5 Nonparametric fallback (site-wise)
+```{r combined-nonparam}
+needs_np_combined <- any(assump_combined$shapiro_resid_p < 0.05, na.rm = TRUE) || any(assump_combined$levene_p < 0.05, na.rm = TRUE)
+if (needs_np_combined) {
+  kw_all <- purrr::map_dfr(shared_traits, function(tr){
+    df <- intake_all %>% select(species, site, treatment, value = all_of(tr)) %>% drop_na()
+    purrr::map_dfr(unique(df$species), function(sp){
+      sdf <- df %>% filter(species == sp)
+      purrr::map_dfr(unique(sdf$site), function(si){
+        sub <- sdf %>% filter(site == si)
+        if(n_distinct(sub$treatment) > 1){kw <- kruskal.test(value ~ treatment, data = sub); tibble(trait = tr, species = sp, site = si, statistic = unname(kw$statistic), p_value = kw$p.value)} else tibble()
+      })
+    })
+  })
+  # readr::write_csv(kw_all, file.path(params$out_dir, "nonparam_kruskal_sitewise_shared_traits.csv"))
+  knitr::kable(head(kw_all, 10), caption = "Kruskal–Wallis (head)")
+}
+```
+
+## 3.6 Plots
+```{r combined-plots, fig.width=10, fig.height=7}
+p_box <- intake_all %>%
+  pivot_longer(all_of(shared_traits), names_to = "trait", values_to = "value") %>%
+  ggplot(aes(x = treatment, y = value, fill = species)) +
+  geom_boxplot(outlier.alpha = 0.5, position = position_dodge(width = 0.9)) +
+  geom_jitter(aes(group = species), width = 0.15, alpha = 0.35, size = 1, position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.9)) +
+  facet_grid(trait ~ site, scales = "free_y") +
+  scale_fill_manual(values = okabe_ito[c(2,7)]) +
+  labs(title = "Shared intake traits by Treatment (faceted by Site)", x = "Treatment (initial substrate)", y = "Value", fill = "Species") +
+  theme_bw(base_size = 12)
+
+p_box
+# ggsave(file.path(params$out_dir, "plots_shared_traits_box_by_site.png"), p_box, dpi = 300, width = 11, height = 7)
+```
+
+---
+
+# 4. Narrative highlights (auto)
+```{r narrative, results='asis'}
+if (exists("report_anova")){
+  narrative <- report_anova %>% group_by(trait) %>% summarise(highlights = paste0(trait, ": ", paste0(term, " (p=", scales::pvalue(p.value), ", ", sig, ")", collapse = "; "), "."), .groups = "drop")
+  cat("**Highlights (shared traits)**\n\n")
+  for (i in seq_len(nrow(narrative))) cat("- ", narrative$highlights[i], "\n", sep = "")
+}
+```
+
+---
+
+# 5. Session info
+```{r session}
+writeLines(capture.output(sessionInfo()), file.path(params$out_dir, "sessionInfo.txt"))
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+Here’s a tight, peer-review–style assessment of what you’ve got so far, with actionably specific notes.
+
+# RHMA — Intake (1.x)
+
+## Data & QC
+
+* **Cleaning** looks sound: relaxed date parsing, numeric coercion with commas stripped, first observation per `prop_id` retained.
+* **Extreme-value flags (3×IQR rule)** surfaced only **4 rows** across all continuous traits. Specific red flags worth manual review:
+
+  * `D-15 (OC, D) diameter = 2.9` (implausibly small vs typical 11–14; likely entry/unit error).
+  * `E-35 (CP, E) hypo_length = 2.3` and `total_height = 3.4` (both far below cohort; possible truncation/unit issue).
+  * `D-55 (PR, D) mass = 55.6` with upper bound ≈55.5 (right at the threshold; confirm scale/logging).
+* Keep these four under a **“verify source sheet”** list; don’t auto-drop yet—re-check field notes/labels first.
+
+## Assumption checks (normality/variance)
+
+* **Residual normality:** Strongly **violated** for *all* RHMA continuous traits (Shapiro p ≪ .05), so strict ANOVA assumptions don’t hold.
+* **Homogeneity (Levene):** Mostly **OK** (Equal Var) **except** `rhma_height_1` (p≈.018) and `rhma_height_2` (p≈.041) → heteroscedasticity there.
+  **Implication:** For inference, prefer (a) robust/heteroskedastic-consistent SEs, or (b) non-parametric alternatives; classic ANOVA will tend to inflate Type-I error for the height traits.
+
+## Descriptives: broad patterns
+
+From the site×treatment means:
+
+* **Site effects are large and consistent** (e.g., OC tends to be tallest/heaviest; PR tends to have bigger diameters).
+* **Treatment effects are also strong** and sometimes **site-dependent** (interaction visible in several traits). Example signals:
+
+  * `total_height` & `mass`: Treatment **E** is notably lower at **PR** and often at **OC** vs A–C.
+  * `diameter`: PR > OC ≳ CP overall; D often lower within sites.
+* **Categoricals:**
+
+  * `hypo_color` differs by *site* (e.g., PR nearly all “G”; OC has some “B” in D/E) and by *treatment* (E shows more non-G at CP/OC).
+  * `roots` shows **pronounced site differences**: PR has high **N** (no roots) proportions, whereas CP/OC lean **Y** (rooted).
+
+## Formal tests
+
+* **Parametric two-way ANOVA (lm on raw):**
+
+  * For **every continuous trait**, **Site** and **Treatment** main effects are **highly significant** (p < .001 in most).
+  * **Site×Treatment interactions** are **often significant** (e.g., diameter, epi\_length, hypo\_length, heights, total\_height), confirming treatment effects vary by site.
+  * Given non-normality (and some heteroscedasticity), treat these p-values as **indicative**, not definitive.
+* **Non-parametric per-site Kruskal–Wallis** (Treatment effect within each Site):
+
+  * Many **significant** results across OC/CP/PR for diameter, epi\_length, hypo\_length, total\_height, mass (e.g., PR diameter p≈2.4e-7; OC total\_height p≈4.7e-4).
+  * **Dunn (Bonferroni)** post-hoc: Contrasts frequently show **D vs A/B** as significant (direction consistent with lower D/E means where noted).
+* **Categoricals (χ²):**
+
+  * `hypo_color` differs by **Site** (p≈1e-6) and **Treatment** (p<1e-6).
+  * `roots` differs **strongly by Site** (p<1e-6) and **by Treatment** (p≈0.0018).
+    These are robust to non-normality (assumes adequate expected counts; your tables are well-populated).
+
+## Post-hoc via EMMs (Tukey)
+
+* Your `emmeans` by Site with Tukey adjustment is an excellent way to **map the interaction**. Keep it, but **pair it with** either:
+
+  * a **rank-based** analogue (e.g., **ART**: aligned-rank transform two-way ANOVA) **or**
+  * **heteroskedastic-robust** linear models (HC3/HC4 SEs), so inference is consistent with diagnostics.
+
+## Visualization
+
+* Box/jitter grids by `trait ~ site` neatly show **spread and interaction**; keep `free_y`.
+* Stacked bars for categorical proportions are clear; consider adding **exact `%` labels** inside bars for camera-ready figures.
+
+---
+
+# LARA — Intake (2.x)
+
+## Data & QC
+
+* Cleaning mirrors RHMA; duplicate ID reconciliation `prop_id` vs `prop_id_2` is good.
+* **Consistency checks** for lengths: your `total_length = prop_length + rad_length` pass flagged **mismatches** (threshold 0.1). Keep that short “fix list” for audit; these are the classic transcription/rounding issues to correct upstream.
+* **Suspicious dates** filter (`>2025`) is appropriate—none reported after filtering.
+
+## Assumption checks
+
+* **Residual normality:** Violated for most traits (width, rad\_length, total\_length, mass).
+* **Variance homogeneity:** Multiple **Levene p < .05** (rad\_length, total\_length, mass).
+  **Implication:** Prefer non-parametric or robust methods for confirmatory tests.
+
+## Descriptives & patterns
+
+* **Mass:** PR > MB ≳ VB on average; **Treatment E** tends lower (notably in VB).
+* **prop\_length / total\_length:** Higher at PR and VB vs MB (site effect); some treatment separation within site.
+* **rad\_length:** Zero or near-zero in some MB cells (e.g., B), but present elsewhere—big site×treatment structure.
+* **Seed color:** Clear differences by **site** and **treatment** (e.g., MB largely B in C–E; VB mixes B/G; PR mixed B/G with some NA in B).
+
+## Formal tests
+
+* **Two-way ANOVA (reporting as descriptive):**
+
+  * **Site**: significant for all five continuous traits (\*\*\*).
+  * **Treatment**: significant for mass, prop\_length, rad\_length, total\_length, width (mostly \*\* to \*\*\*).
+  * **Site×Treatment**: present for mass/total\_length/width (often \* to \*\*\*).
+    Use results descriptively given assumption violations.
+* **Kruskal–Wallis per site:** Multiple significant treatment effects (e.g., VB mass p≈2.1e-6; MB total\_length p≈5e-9).
+
+  * **Dunn (Bonferroni)** post-hoc highlights which pairs drive the signal; again, D/E vs A/B often emerge.
+* **Seed color χ²:** Significant across **Site** (p≈3.9e-4) and **Treatment** (p<1e-6).
+
+---
+
+# Interpretation & Reporting Guidance
+
+## 1) What is clearly supported
+
+* **Strong Site effects** at intake for both species across all continuous traits and colors/roots. Sites are meaningfully different biological contexts at baseline.
+* **Treatment effects** exist **at intake** (before planting) for size/height/mass traits and color/roots, **and** these effects **depend on site** in many cases.
+* **Within-site** comparisons confirm treatment separation using **distribution-free** tests (Kruskal + Dunn), aligning with your EMM/Tukey patterns.
+
+## 2) Caveats you should state in Methods
+
+* Residuals are **non-normal** and some traits are **heteroskedastic** → Classic ANOVA p-values are **not** your primary confirmatory inference; they’re supportive/descriptive.
+* You conducted **non-parametric** within-site tests (Kruskal–Wallis + Dunn with Bonferroni), which are the **primary** inferential results for intake differences.
+* Multiple testing across many traits & sites → control **familywise rate** or **FDR** (Bonferroni is conservative; BH/FDR is acceptable if you justify it).
+
+## 3) Recommended upgrades (fast wins)
+
+* **Robust 2-way approach:** Re-fit `lm` per trait with **HC3** SEs via `sandwich` + `lmtest::coeftest`, and run **Wald tests** for `Site`, `Treatment`, `Site×Treatment`. Report robust p’s alongside EMMs.
+* **Rank-based 2-way** (if you want a fully non-parametric factorial): **ARTool** (`ART` + `ARTool::anova(art_model)`), then **ART-EMMs** for post-hoc contrasts.
+* **Effect sizes:**
+
+  * Parametric: partial **η²** for ANOVA tables; **Cohen’s d** (or **Hedges g**) for pairwise Tukey contrasts (use `emmeans::eff_size`).
+  * Non-parametric: report **Cliff’s delta** or **rank-biserial r** for Dunn pairs.
+* **QC loop:** Manually check the 4 flagged RHMA rows + LARA length mismatches; keep a tiny appendix table “records corrected”.
+
+## 4) Narrative (Results) skeleton you can lift into the manuscript
+
+* *“At intake, continuous traits differed strongly among sites for both RHMA and LARA (robust two-way tests: all p<0.001 in most traits). Treatment main effects were also significant for diameter/height/mass (RHMA) and for width/length/mass (LARA), with several **Site×Treatment** interactions indicating site-specific treatment rankings. Non-parametric within-site tests (Kruskal–Wallis with Dunn) corroborated these patterns: for example, in RHMA at PR, diameter varied among treatments (χ²≈36.4, p<10⁻⁶), with D/E lower than A–C after adjustment; similar results held for total height and mass at OC and CP. Categorical traits also differed: RHMA hypocotyl color proportions varied by site (χ²≈33.3, p≈10⁻⁶) and treatment (χ²≈206.6, p<10⁻⁶); root presence showed strong site and treatment effects (both p≤0.002). In LARA, seed color varied by site (χ²≈28.45, p≈4×10⁻⁴) and treatment (χ²≈124.8, p<10⁻⁶). These results indicate that seedlings entered the experiment with **non-equivalent baselines** across sites and treatments, motivating adjustment for intake covariation in downstream survival/growth analyses.”*
+
+## 5) What to carry forward into longitudinal models
+
+* Because baseline (intake) differs, **include intake covariates** (e.g., total height, mass, diameter, seed/hypo color, root presence) or their **site-centered** forms in your GLMMs for survival/growth.
+* Consider **propensity-like adjustment** at the site level (e.g., include Site × Treatment and intake trait(s)) to account for baseline imbalance.
+* For plots, add **site-specific EMMs with CIs** (robust) to emphasize interaction, not just raw boxplots.
+
+---
+
+## Minor code notes (quality-of-life)
+
+* Your `case_match` switch for terms is great—keeps things robust to factor label casing.
+* Where Shapiro is used, continue to test **residuals** (not raw values)—you already do this correctly.
+* For Dunn, Bonferroni is fine; if power is a concern and you can justify, **Holm** is uniformly better than Bonferroni.
+* For χ², quickly check **expected counts ≥5**; if any are <5, swap to **Fisher–Freeman–Halton** (extension of Fisher’s exact) for the affected table.
+
+---
+
+### Bottom line
+
+* **Strong, consistent evidence** of **site** and **treatment** differences **at intake** for both species, with **site-specific treatment rankings**.
+* Your **non-parametric** and **EMM** workflows appropriately triangulate these effects given assumption violations.
+* Clean up the flagged records, add **robust ANOVA** (or **ART**) for factorial inference, and report **effect sizes**.
+* Then **carry intake covariates forward** in your GLMMs so downstream effects aren’t confounded by baseline imbalance.
+
