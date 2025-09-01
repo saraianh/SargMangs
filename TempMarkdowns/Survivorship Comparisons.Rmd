@@ -90,13 +90,14 @@ flagged_ids <- qc_resurrections %>% distinct(Species, Prop_ID)
 ALLDATA_no_flags <- ALLDATA_SurvBin %>%
   anti_join(flagged_ids, by = c("Species","Prop_ID"))
 
-
+# Export the full dataset of ALLDATA (all time periods) to CSV
+write_csv(ALLDATA_no_flags, "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\survivors_tp0-tp6.csv")
 ```
 
 
 
-## Creating list with the ALLDATA at tp1 and tp6
-```{r tp0-6}
+## Creating list with the ALLDATA at tp0 and tp6
+```{r alive-plants}
 #Step 1: make a dataframe that has all alive plants with survivorship percentages
 alive_plants <- ALLDATA_no_flags %>%
   group_by(Species, Treatment_Name, Replicate, Time_Period) %>%
@@ -488,13 +489,17 @@ cox1 <- coxph(
 summary(cox1)  # HRs are exp(coef)
 
 # PH (proportional hazards) assumption checks
-ph <- cox.zph(cox1)   # Schoenfeld residual tests
-print(ph)
+# ph <- cox.zph(cox1)   # Schoenfeld residual tests
+# print(ph)
+
+# Results:
+# Warning :contrasts dropped from factor frailty(Site)
+# Error in X[, keep] : (subscript) logical subscript too long
 # plot(ph)   # inspect any lines with clear slope (violations)
 
 # Tidy HR table (vs the reference levels: Soil and first Species level)
-hr_tbl <- broom::tidy(cox1, exponentiate = TRUE, conf.int = TRUE)
-hr_tbl[ , c("term","estimate","conf.low","conf.high","p.value")]
+# hr_tbl <- broom::tidy(cox1, exponentiate = TRUE, conf.int = TRUE)
+# hr_tbl[ , c("term","estimate","conf.low","conf.high","p.value")]
 ```
 
 ```{r}
@@ -512,7 +517,7 @@ broom::tidy(cox_sarg, exponentiate = TRUE, conf.int = TRUE) %>%
   dplyr::select(term, estimate, conf.low, conf.high, p.value)
 ```
 
-```{r}
+```r cox}
 # ---- 5) If PH is violated: two easy remedies --------------------------
 # A) Stratify on the offending factor (lets baseline hazard differ)
 #    Example: allow different baselines by Species but keep Treatment effects common:
