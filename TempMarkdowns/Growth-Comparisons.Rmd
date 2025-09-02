@@ -1,0 +1,565 @@
+---
+title: "Growth Comparisons"
+author: "Sarai Hutchinson"
+date: "2025-09-01"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+params:
+  export_dir: "exports"
+---
+
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(janitor)
+library(lme4)
+```
+
+---
+
+### 1. Load & Clean
+
+```{r}
+surv <- readr::read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\survivors_tp0-tp6.csv",
+                        guess_max = 10000, show_col_types = FALSE) %>%
+  clean_names()
+
+surv <- surv%>%
+  mutate(
+treatment_name = factor(
+      treatment_name,
+      levels = c("Soil", "Crushed glass (CG)", "3:1 CG to SG", "1:3 CG to SG", "Sargassum only (SG)"))) #ordered it so that it goes from least Sargassum to most Sargassum additions
+      
+# Coerce to numeric safely
+num_cols <- c("rhma_height_1","rhma_height_2","rhma_epi_length",
+              "lara_height_1","lara_height_2","number_branches")
+num_cols <- intersect(num_cols, names(surv))
+
+surv <- surv %>%
+  mutate(across(all_of(num_cols), ~ suppressWarnings(as.numeric(.x))))
+
+# Ensure time_period is numeric
+surv <- surv %>%
+  mutate(across(all_of(num_cols), ~ suppressWarnings(as.numeric(.x))),
+         time_period = suppressWarnings(as.numeric(time_period)),
+         monitor_date = suppressWarnings(ymd(date_monitored)),
+         uploaded_date = suppressWarnings(ymd(date_uploaded)))
+
+```
+
+---
+
+```{r duplicates-check}
+# Duplicates per plant-time
+dups <- surv %>%
+  count(species, treatment_name, prop_id, time_period, sort = TRUE) %>%
+  filter(n > 1)
+dups %>% print(n = 40)
+
+# Temporary total heights to check non-positive values
+surv_chk <- surv %>%
+  mutate(
+    total_height_substrate_cm = case_when(
+      species == "RHMA" ~ rhma_height_1 + rhma_epi_length,
+      species == "LARA" ~ lara_height_1,
+      TRUE ~ NA_real_
+    ),
+    total_height_pot_cm = case_when(
+      species == "RHMA" ~ rhma_height_2 + rhma_epi_length,
+      species == "LARA" ~ lara_height_2,
+      TRUE ~ NA_real_
+    ),
+    total_height_mean_cm = {
+      m <- cbind(total_height_substrate_cm, total_height_pot_cm)
+      x <- rowMeans(m, na.rm = TRUE)
+      ifelse(is.nan(x), NA_real_, x)
+    }
+  )
+
+surv_chk %>%
+  filter(!is.na(total_height_mean_cm), total_height_mean_cm <= 0) %>%
+  count(species, treatment_name, time_period, sort = TRUE) %>%
+  print(n = 40)
+
+```
+
+
+### 2. Total Heights (substrate, pot, mean)
+
+```{r total-heights}
+surv <- surv %>%
+  mutate(
+    total_height_substrate_cm = case_when(
+      species == "RHMA" ~ rhma_height_1 + rhma_epi_length,
+      species == "LARA" ~ lara_height_1,
+      TRUE ~ NA_real_
+    ),
+    total_height_pot_cm = case_when(
+      species == "RHMA" ~ rhma_height_2 + rhma_epi_length,
+      species == "LARA" ~ lara_height_2,
+      TRUE ~ NA_real_
+    ),
+    total_height_mean_cm = {
+      m <- cbind(total_height_substrate_cm, total_height_pot_cm)
+      x <- rowMeans(m, na.rm = TRUE)
+      ifelse(is.nan(x), NA_real_, x)
+    }
+  )
+
+surv_use <- surv %>% filter(!is.na(time_period))
+```
+
+---
+
+### 3. Compute AGR & RGR (per plant)
+
+```{r AGR-RGR}
+by_prop <- surv_use %>%
+  group_by(species, treatment_name, prop_id) %>%
+  arrange(time_period, .by_group = TRUE) %>%
+  mutate(
+    dt = time_period - lag(time_period),
+    h_mean = total_height_mean_cm,
+    h_mean_lag = lag(h_mean),
+    h_mean_pos = ifelse(h_mean > 0, h_mean, NA_real_),
+    h_mean_pos_lag = ifelse(h_mean_lag > 0, h_mean_lag, NA_real_),
+    AGR = (h_mean - h_mean_lag) / dt,
+    RGR = (log(h_mean_pos) - log(h_mean_pos_lag)) / dt
+  ) %>%
+  ungroup()
+```
+
+---
+
+### 4. Summarize by Species × Substrate × Time\_Period
+
+```{r}
+growth_summary <- by_prop %>%
+  group_by(species, treatment_name, time_period) %>%
+  summarise(
+    n_records = n(),
+    mean_total_height_cm = mean(total_height_mean_cm, na.rm = TRUE),
+    sd_total_height_cm   = sd(total_height_mean_cm, na.rm = TRUE),
+    mean_branches        = mean(number_branches, na.rm = TRUE),
+    sd_branches          = sd(number_branches, na.rm = TRUE),
+    mean_AGR_cm_per_TP   = mean(AGR, na.rm = TRUE),
+    sd_AGR_cm_per_TP     = sd(AGR, na.rm = TRUE),
+    mean_RGR_per_TP      = mean(RGR, na.rm = TRUE),
+    sd_RGR_per_TP        = sd(RGR, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(species, treatment_name, time_period)
+
+print(growth_summary, n = 30)
+```
+
+---
+
+### 5. Export (optional)
+
+```{r}
+# Save to CSV if you want a table
+readr::write_csv(growth_summary,
+  "C:/Users/sarai/OneDrive/Email attachments/Documents/UVI/Thesis.Work/SargMangs/OutputData/growth_summary_by_species_substrate_TP.csv")
+```
+
+
+### 1) Mean Total Height (cm) — line + ribbon (± SD), faceted by species
+
+```{r}
+ggplot(growth_summary,
+       aes(x = time_period, y = mean_total_height_cm,
+           color = treatment_name, group = treatment_name)) +
+  geom_line() +
+  geom_point() +
+  geom_ribbon(aes(ymin = mean_total_height_cm - sd_total_height_cm,
+                  ymax = mean_total_height_cm + sd_total_height_cm,
+                  fill = treatment_name),
+              alpha = 0.18, color = NA) +
+  facet_wrap(~ species, scales = "free_y") +
+  labs(x = "Month", y = "Mean Total Height (cm)",
+       color = "Substrate", fill = "Substrate",
+       title = "Total Height (Mean ± SD) by Species & Substrate") +
+  scale_x_continuous(breaks = sort(unique(growth_summary$time_period))) +
+  theme_minimal()
+```
+
+---
+
+### 2) Mean AGR (cm per TP) — line + ribbon (± SD), faceted by species
+
+```{r}
+ggplot(growth_summary,
+       aes(x = time_period, y = mean_AGR_cm_per_TP,
+           color = treatment_name, group = treatment_name)) +
+  geom_line() +
+  geom_point() +
+  geom_ribbon(aes(ymin = mean_AGR_cm_per_TP - sd_AGR_cm_per_TP,
+                  ymax = mean_AGR_cm_per_TP + sd_AGR_cm_per_TP,
+                  fill = treatment_name),
+              alpha = 0.18, color = NA) +
+  facet_wrap(~ species, scales = "free_y") +
+  labs(x = "Month", y = "Mean AGR (cm per TP)",
+       color = "Substrate", fill = "Substrate",
+       title = "Absolute Growth Rate (Mean ± SD) by Species & Substrate") +
+  scale_x_continuous(breaks = sort(unique(growth_summary$time_period))) +
+  theme_minimal()
+```
+
+---
+
+### 3) Mean RGR (1 per TP) — line + ribbon (± SD), faceted by species
+
+```{r}
+ggplot(growth_summary,
+       aes(x = time_period, y = mean_RGR_per_TP,
+           color = treatment_name, group = treatment_name)) +
+  geom_line() +
+  geom_point() +
+  geom_ribbon(aes(ymin = mean_RGR_per_TP - sd_RGR_per_TP,
+                  ymax = mean_RGR_per_TP + sd_RGR_per_TP,
+                  fill = treatment_name),
+              alpha = 0.18, color = NA) +
+  facet_wrap(~ species, scales = "free_y") +
+  labs(x = "Time Period", y = "Mean RGR (1 per TP)",
+       color = "Substrate", fill = "Substrate",
+       title = "Relative Growth Rate (Mean ± SD) by Species & Substrate") +
+  scale_x_continuous(breaks = sort(unique(growth_summary$time_period))) +
+  theme_minimal()
+```
+
+
+See where RGR is negative and how many plants contribute
+```{r}
+neg_rgr <- growth_summary %>%
+  filter(mean_RGR_per_TP < 0) %>%
+  arrange(species, treatment_name, time_period) %>%
+  select(species, treatment_name, time_period,
+         n_records, mean_RGR_per_TP, sd_RGR_per_TP)
+neg_rgr
+
+```
+
+If you didn’t save contributor counts for RGR, add them:
+```{r}
+# Rebuild contributor counts for RGR if missing
+by_prop_counts <- by_prop %>%
+  group_by(species, treatment_name, time_period) %>%
+  summarise(n_RGR = sum(!is.na(RGR)), .groups = "drop")
+
+growth_summary <- growth_summary %>%
+  left_join(by_prop_counts, by = c("species","treatment_name","time_period"))
+
+```
+
+
+---
+
+### (Optional) switch ribbons to **SE** instead of SD
+
+If you prefer **Mean ± SE**, create SE columns and swap them into the ribbons:
+
+```r
+growth_summary_se <- growth_summary %>%
+  mutate(
+    se_total = sd_total_height_cm / sqrt(pmax(1, n_records)),
+    se_agr   = sd_AGR_cm_per_TP / sqrt(pmax(1, n_records)),
+    se_rgr   = sd_RGR_per_TP / sqrt(pmax(1, n_records))
+  )
+```
+
+Then replace `sd_*` with `se_*` in the three plotting chunks (e.g., `ymin = mean_total_height_cm - se_total`, etc.).
+
+
+### Species contrasts within each substrate × time
+```{r}
+species_contrasts <- growth_summary %>%
+  select(species, treatment_name, time_period,
+         mean_total_height_cm, mean_AGR_cm_per_TP, mean_RGR_per_TP) %>%
+  pivot_wider(names_from = species,
+              values_from = c(mean_total_height_cm, mean_AGR_cm_per_TP, mean_RGR_per_TP)) %>%
+  mutate(
+    height_diff_LARA_minus_RHMA = mean_total_height_cm_LARA - mean_total_height_cm_RHMA,
+    AGR_diff_LARA_minus_RHMA    = mean_AGR_cm_per_TP_LARA - mean_AGR_cm_per_TP_RHMA,
+    RGR_diff_LARA_minus_RHMA    = mean_RGR_per_TP_LARA - mean_RGR_per_TP_RHMA
+  ) %>%
+  arrange(treatment_name, time_period)
+
+print(species_contrasts, n = 100)
+
+```
+
+```{r}
+ggplot(growth_summary,
+       aes(x = time_period, y = mean_total_height_cm, color = treatment_name, group = treatment_name)) +
+  geom_line() + geom_point() +
+  geom_ribbon(aes(ymin = mean_total_height_cm - sd_total_height_cm,
+                  ymax = mean_total_height_cm + sd_total_height_cm,
+                  fill = treatment_name), alpha = 0.15, color = NA) +
+  facet_wrap(~ species, scales = "free_y") +
+  labs(x = "Month", y = "Mean Total Height (cm)", color = "Substrate", fill = "Substrate",
+       title = "Total Height (Mean \u00B1 SE) by Species and Substrate") +
+  theme_minimal()
+
+```
+
+```{r}
+lmer(total_height_mean_cm ~ treatment_name * time_period + (1|prop_id), data=surv_use %>% filter(species=="RHMA"))
+```
+```{r}
+library(lmerTest)
+library(emmeans)
+
+m_rhma <- lmer(total_height_mean_cm ~ treatment_name * time_period + (1 | prop_id),
+               data = surv_use %>% dplyr::filter(species == "RHMA"))
+
+## Predicted means at TP6 and pairwise contrasts (Tukey-adjusted)
+emm_tp6 <- emmeans(m_rhma, ~ treatment_name | time_period,
+                   at = list(time_period = 6))
+emm_tp6
+pairs(emm_tp6, adjust = "tukey")
+
+## Compare growth slopes (cm per TP) across substrates
+emtr <- emtrends(m_rhma, ~ treatment_name, var = "time_period")
+emtr
+pairs(emtr, adjust = "tukey")
+
+## (Optional) Predicted means for TP0–TP6 to recreate the lines from the model
+emm_grid <- emmeans(m_rhma, ~ treatment_name * time_period,
+                    at = list(time_period = 0:6))
+as.data.frame(emm_grid)
+```
+Fit the LARA model (same spec as RHMA)
+```{r}
+# If you don't already have m_rhma in memory, uncomment:
+# m_rhma <- lmer(total_height_mean_cm ~ treatment_name * time_period + (1 | prop_id),
+#                data = surv_use %>% filter(species == "RHMA"))
+
+m_lara <- lmer(total_height_mean_cm ~ treatment_name * time_period + (1 | prop_id),
+               data = surv_use %>% filter(species == "LARA"))
+
+summary(m_lara)
+
+```
+
+TP6 estimated means and contrasts vs Soil (RHMA & LARA)
+```{r}
+# RHMA TP6 means and Soil-vs-others contrasts
+emm_tp6_rhma <- emmeans(m_rhma, ~ treatment_name | time_period,
+                        at = list(time_period = 6))
+tp6_contrasts_rhma <- contrast(emm_tp6_rhma, method = "trt.vs.ctrl",
+                               ref = "Soil", adjust = "dunnett") %>%
+  as.data.frame() %>%
+  mutate(Species = "RHMA")
+
+# LARA TP6 means and Soil-vs-others contrasts
+emm_tp6_lara <- emmeans(m_lara, ~ treatment_name | time_period,
+                        at = list(time_period = 6))
+tp6_contrasts_lara <- contrast(emm_tp6_lara, method = "trt.vs.ctrl",
+                               ref = "Soil", adjust = "dunnett") %>%
+  as.data.frame() %>%
+  mutate(Species = "LARA")
+
+# Combine for a side-by-side table
+tp6_contrasts_both <- bind_rows(tp6_contrasts_rhma, tp6_contrasts_lara) %>%
+  relocate(Species) %>%
+  arrange(Species, contrast)
+
+tp6_contrasts_both
+
+```
+(Interpretation: estimate is Treatment − Soil at TP6 in cm; negative = shorter than Soil. p.value is Dunnett-adjusted.)
+
+Growth slopes (cm per TP) via emtrends and contrasts vs Soil
+```{r}
+# RHMA slopes and Soil-vs-others contrasts
+emtr_rhma <- emtrends(m_rhma, ~ treatment_name, var = "time_period")
+slope_contrasts_rhma <- contrast(emtr_rhma, method = "trt.vs.ctrl",
+                                 ref = "Soil", adjust = "dunnett") %>%
+  as.data.frame() %>%
+  mutate(Species = "RHMA")
+
+# LARA slopes and Soil-vs-others contrasts
+emtr_lara <- emtrends(m_lara, ~ treatment_name, var = "time_period")
+slope_contrasts_lara <- contrast(emtr_lara, method = "trt.vs.ctrl",
+                                 ref = "Soil", adjust = "dunnett") %>%
+  as.data.frame() %>%
+  mutate(Species = "LARA")
+
+# Combine for a side-by-side table
+slope_contrasts_both <- bind_rows(slope_contrasts_rhma, slope_contrasts_lara) %>%
+  relocate(Species) %>%
+  arrange(Species, contrast)
+
+slope_contrasts_both
+
+```
+
+```{r}
+readr::write_csv(tp6_contrasts_both,
+ "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs/OutputData/TP6_contrasts_vs_Soil_RHMA_LARA.csv")
+
+readr::write_csv(slope_contrasts_both,
+  "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs/OutputData/Slope_contrasts_vs_Soil_RHMA_LARA.csv")
+
+```
+
+
+```{r}
+# --- Rebuild contrasts WITH confidence intervals ---
+library(lmerTest)
+library(emmeans)
+library(dplyr)
+library(stringr)
+library(glue)
+
+# Ensure models exist
+if (!exists("m_rhma")) m_rhma <- lmer(total_height_mean_cm ~ treatment_name * time_period + (1 | prop_id),
+                                      data = surv_use %>% dplyr::filter(species == "RHMA"))
+if (!exists("m_lara")) m_lara <- lmer(total_height_mean_cm ~ treatment_name * time_period + (1 | prop_id),
+                                      data = surv_use %>% dplyr::filter(species == "LARA"))
+
+# TP6 means
+emm_tp6_rhma <- emmeans(m_rhma, ~ treatment_name | time_period, at = list(time_period = 6))
+emm_tp6_lara <- emmeans(m_lara, ~ treatment_name | time_period, at = list(time_period = 6))
+
+tp6_contrasts_rhma <- contrast(emm_tp6_rhma, "trt.vs.ctrl", ref = "Soil", adjust = "dunnett") |>
+  summary(infer = c(TRUE, TRUE)) |>
+  as.data.frame() |>
+  mutate(Species = "RHMA")
+
+tp6_contrasts_lara <- contrast(emm_tp6_lara, "trt.vs.ctrl", ref = "Soil", adjust = "dunnett") |>
+  summary(infer = c(TRUE, TRUE)) |>
+  as.data.frame() |>
+  mutate(Species = "LARA")
+
+tp6_contrasts_both <- bind_rows(tp6_contrasts_rhma, tp6_contrasts_lara)
+
+# Slopes (cm/TP)
+emtr_rhma <- emtrends(m_rhma, ~ treatment_name, var = "time_period")
+emtr_lara <- emtrends(m_lara, ~ treatment_name, var = "time_period")
+
+slope_contrasts_rhma <- contrast(emtr_rhma, "trt.vs.ctrl", ref = "Soil", adjust = "dunnett") |>
+  summary(infer = c(TRUE, TRUE)) |>
+  as.data.frame() |>
+  mutate(Species = "RHMA")
+
+slope_contrasts_lara <- contrast(emtr_lara, "trt.vs.ctrl", ref = "Soil", adjust = "dunnett") |>
+  summary(infer = c(TRUE, TRUE)) |>
+  as.data.frame() |>
+  mutate(Species = "LARA")
+
+slope_contrasts_both <- bind_rows(slope_contrasts_rhma, slope_contrasts_lara)
+
+```
+
+
+```{r}
+# --- Helpers (robust CI extractor + formatting) ---
+fmt_num <- function(x, d = 2) formatC(x, format = "f", digits = d)
+fmt_p   <- function(p) ifelse(p < .001, "<0.001", sprintf("%.3f", p))
+
+ci_cols <- function(df) {
+  n <- nrow(df)
+  lower <- if ("lower.CL" %in% names(df)) df$lower.CL else if ("asymp.LCL" %in% names(df)) df$asymp.LCL else rep(NA_real_, n)
+  upper <- if ("upper.CL" %in% names(df)) df$upper.CL else if ("asymp.UCL" %in% names(df)) df$asymp.UCL else rep(NA_real_, n)
+  tibble(lower = lower, upper = upper)
+}
+
+extract_treatment <- function(x) stringr::str_replace(x, " - Soil$", "")
+
+```
+
+```{r}
+# --- Rebuild bullets (now with CIs present) ---
+tp6_bullets <- tp6_contrasts_both %>%
+  mutate(Treatment = extract_treatment(contrast),
+         Direction = ifelse(estimate < 0, "lower", "higher"),
+         Magnitude = abs(estimate),
+         Species = factor(Species, levels = c("LARA","RHMA"))) %>%
+  bind_cols(ci_cols(.)) %>%
+  arrange(Species, Treatment) %>%
+  mutate(
+    bullet = glue("- {Species}: At TP6, **{Treatment}** is **{Direction}** than **Soil** by {fmt_num(Magnitude)} cm ",
+                  "(95% CI {fmt_num(lower)}, {fmt_num(upper)}; p = {fmt_p(p.value)}).")
+  )
+
+slope_bullets <- slope_contrasts_both %>%
+  mutate(Treatment = extract_treatment(contrast),
+         Direction = ifelse(estimate < 0, "slower", "faster"),
+         Magnitude = abs(estimate),
+         Species = factor(Species, levels = c("LARA","RHMA"))) %>%
+  bind_cols(ci_cols(.)) %>%
+  arrange(Species, Treatment) %>%
+  mutate(
+    bullet = glue("- {Species}: Growth in **{Treatment}** is **{Direction}** than **Soil** by {fmt_num(Magnitude)} cm/TP ",
+                  "(95% CI {fmt_num(lower)}, {fmt_num(upper)}; p = {fmt_p(p.value)}).")
+  )
+
+# Show only significant (alpha = 0.05); remove filters to show all
+tp6_sig   <- tp6_bullets  %>% filter(p.value < 0.05)
+slope_sig <- slope_bullets %>% filter(p.value < 0.05)
+
+cat("\n### TP6 mean height vs Soil (significant only)\n")
+if (nrow(tp6_sig) == 0) cat("- No significant differences at TP6.\n") else cat(paste0(tp6_sig$bullet, "\n"), sep = "")
+
+cat("\n### Growth slopes vs Soil (cm per TP; significant only)\n")
+if (nrow(slope_sig) == 0) cat("- No significant slope differences.\n") else cat(paste0(slope_sig$bullet, "\n"), sep = "")
+
+```
+
+```{r}
+# Slope table (emtrends) with CIs and Dunnett vs Soil, both species
+library(dplyr); library(emmeans); library(tidyr)
+
+mk_slope_table <- function(mod, sp){
+  emtr <- emtrends(mod, ~ treatment_name, var = "time_period")
+  slopes <- summary(emtr, infer = c(TRUE, TRUE)) %>% as.data.frame()
+  contr  <- contrast(emtr, "trt.vs.ctrl", ref = "Soil", adjust = "dunnett") %>%
+    summary(infer = c(TRUE, TRUE)) %>% as.data.frame()
+  left_join(
+    slopes %>%
+      transmute(Species = sp,
+                treatment_name,
+                slope_cm_per_TP = time_period.trend,
+                slope_LCL = lower.CL, slope_UCL = upper.CL),
+    contr %>%
+      transmute(Species = sp,
+                treatment_name = sub(" - Soil$", "", contrast),
+                diff_vs_Soil = estimate,
+                diff_LCL = lower.CL, diff_UCL = upper.CL, p_value = p.value),
+    by = c("Species","treatment_name")
+  )
+}
+
+slope_tbl <- bind_rows(
+  mk_slope_table(m_lara, "LARA"),
+  mk_slope_table(m_rhma, "RHMA")
+) %>%
+  arrange(Species, treatment_name)
+
+slope_tbl
+# readr::write_csv(slope_tbl, "SargMangs/OutputData/slopes_and_diffs_vs_Soil.csv")
+
+```
+
+```{r}
+# Simple slope plot with 95% CIs (one panel per species)
+library(ggplot2)
+
+ggplot(slope_tbl,
+       aes(x = treatment_name, y = slope_cm_per_TP)) +
+  geom_point(position = position_dodge(width = 0.6)) +
+  geom_errorbar(aes(ymin = slope_LCL, ymax = slope_UCL),
+                width = 0.15, position = position_dodge(width = 0.6)) +
+  facet_wrap(~ Species, scales = "free_y") +
+  labs(x = "Substrate", y = "Growth slope (cm per TP)",
+       title = "Estimated growth slopes by substrate (±95% CI)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+
+```
+
+
