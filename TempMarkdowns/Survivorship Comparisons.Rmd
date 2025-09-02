@@ -141,7 +141,7 @@ ggplot(alive_summary,
                 width = 0.2) +
   facet_wrap(~Species) +
   labs(
-    title = "Mean % Alive per Treatment (±SE) across Time Periods",
+    title = "Mean % Alive per Treatment (\u00B1SE) across Time Periods",
     x = "Month", y = "Mean % Alive"
   ) +
   scale_color_manual(values = okabe_ito, name = "Treatment") +
@@ -164,7 +164,7 @@ ggplot(alive_tp6,
   facet_wrap(~Species) +
   labs(
     title = "Percent Alive at Month 6 by Treatment",
-    x = "Treatment", y = "Mean % Alive (±SE)"
+    x = "Treatment", y = "Mean % Alive (\u00B1SE)"
   ) +
   scale_fill_manual(values = okabe_ito, name = "Treatment") +
   theme_bw(base_size = 12) +
@@ -181,7 +181,7 @@ ggplot(alive_tp6,
   facet_wrap(~Species) +
   labs(
     title = "Percent Alive at Month 6 by Treatment",
-    x = "Treatment", y = "Mean % Alive (±SE)"
+    x = "Treatment", y = "Mean % Alive (\u00B1SE)"
   ) +
   scale_color_manual(values = okabe_ito, name = "Treatment") +
   scale_shape_manual(values = shape_vals, name = "Treatment") +
@@ -216,8 +216,8 @@ ggplot(alive_tp6,
   scale_color_manual(values = okabe_ito, guide = "none") +
   coord_cartesian(ylim = c(0, 100)) +
   labs(
-    title = "Percent Alive at Month 6 by Treatment (bars = mean ± SE; dots = replicates)",
-    x = "Treatment", y = "Mean % Alive (±SE)"
+    title = "Percent Alive at Month 6 by Treatment (bars = mean \u00B1SE; dots = replicates)",
+    x = "Treatment", y = "Mean % Alive (\u00B1SE)"
   ) +
   theme_bw(base_size = 12) +
   theme(axis.text.x = element_text(angle = 20, hjust = 1))
@@ -239,8 +239,8 @@ ggplot(alive_tp6,
   scale_shape_manual(values = shape_vals, name = "Treatment") +
   coord_cartesian(ylim = c(0, 100)) +
   labs(
-    title = "Percent Alive at Month 6 by Treatment (points = mean ± SE; dots = replicates)",
-    x = "Treatment", y = "Mean % Alive (±SE)"
+    title = "Percent Alive at Month 6 by Treatment (points = mean \u00B1SE; dots = replicates)",
+    x = "Treatment", y = "Mean % Alive (\u00B1SE)"
   ) +
   theme_bw(base_size = 12) +
   theme(axis.text.x = element_text(angle = 20, hjust = 1))
