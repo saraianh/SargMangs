@@ -1,0 +1,337 @@
+---
+title: "AGR"
+output: html_document
+---
+
+```{r}
+# ---- Setup ----
+# Packages: tidyverse + janitor are enough
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(janitor)
+})
+
+# Color palettes
+okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7")
+viridis_palette <- viridis(8)
+
+# Helper: pick the first existing column from a candidate list
+pick_col <- function(df, candidates) {
+  cand <- intersect(candidates, names(df))
+  if (length(cand) == 0) return(NA_character_) else cand[1]
+}
+
+# Helper: standard error (returns NA if n<=1)
+se <- function(x) {
+  x <- suppressWarnings(as.numeric(x))
+  x <- x[is.finite(x)]
+  if (length(x) <= 1) return(NA_real_)
+  sd(x) / sqrt(length(x))
+}
+
+# ---- Read & clean ----
+AGR <- readr::read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data\\AGR.csv", show_col_types = FALSE) |> clean_names()
+RGR <- readr::read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data\\RGR.csv", show_col_types = FALSE) |> clean_names()
+
+cat("AGR columns:\n"); print(names(AGR))
+cat("RGR columns:\n"); print(names(RGR))
+
+
+# Works with either 'Prop_ID' or 'prop_id'
+prop_col <- if ("prop_id" %in% names(AGR)) "prop_id" else "Prop_ID"
+
+pid <- trimws(as.character(AGR[[prop_col]]))
+species <- ifelse(grepl("^[lL]", pid), "LARA",
+           ifelse(grepl("^[rR]", pid), "RHMA", NA_character_))
+# Insert Species right after the ID column
+insert_at <- match(prop_col, names(AGR)) + 1L
+AGR <- cbind(AGR[1:(insert_at-1)], Species = factor(species, levels = c("LARA","RHMA")), AGR[insert_at:ncol(AGR)])
+
+# Works with either 'Prop_ID' or 'prop_id'
+prop_col1 <- if ("prop_id" %in% names(RGR)) "prop_id" else "Prop_ID"
+
+pid1 <- trimws(as.character(RGR[[prop_col1]]))
+species1 <- ifelse(grepl("^[lL]", pid1), "LARA",
+           ifelse(grepl("^[rR]", pid1), "RHMA", NA_character_))
+# Insert Species right after the ID column
+insert_at1 <- match(prop_col1, names(RGR)) + 1L
+RGR <- cbind(RGR[1:(insert_at1-1)], Species = factor(species1, levels = c("LARA","RHMA")), RGR[insert_at1:ncol(RGR)])
+
+clean_names(RGR)
+clean_names(AGR)
+
+# 
+id_col       <- pick_col(AGR, c("prop_id"))
+if (is.na(id_col)) id_col <- pick_col(RGR, c("prop_id"))
+
+species_col  <- pick_col(AGR, c("Species"))
+if (is.na(species_col)) species_col <- pick_col(RGR, c("Species"))
+
+treat_col    <- pick_col(AGR, c("treatment"))
+if (is.na(treat_col)) treat_col <- pick_col(RGR, c("treatment"))
+
+agr_val_col  <- pick_col(AGR, c("agr"))
+rgr_val_col  <- pick_col(RGR, c("rgr"))
+
+# If AGR or RGR not present, try to compute them (best effort)
+
+cat("\nDetected columns:\n")
+cat("ID:", id_col, "\nSpecies:", species_col, "\nTreatment:", treat_col,
+    "\nAGR metric:", agr_val_col, "\nRGR metric:", rgr_val_col, "\n")
+
+# ---- Summaries (by Species + Treatment if available; otherwise by Treatment) ----
+group_vars <- c()
+if (!is.na(species_col)) group_vars <- c(group_vars, species_col)
+if (!is.na(treat_col))   group_vars <- c(group_vars, treat_col)
+if (length(group_vars) == 0) group_vars <- id_col  # fallback just to avoid errors
+
+AGR_sum <-
+  if (!is.na(agr_val_col)) {
+    AGR |>
+      mutate(.agr = suppressWarnings(as.numeric(.data[[agr_val_col]]))) |>
+      group_by(across(all_of(group_vars))) |>
+      summarise(
+        n_agr   = sum(is.finite(.agr)),
+        mean_agr= mean(.agr, na.rm = TRUE),
+        sd_agr  = sd(.agr,  na.rm = TRUE),
+        se_agr  = se(.agr),
+        .groups = "drop"
+      )
+  } else tibble()
+
+RGR_sum <-
+  if (!is.na(rgr_val_col)) {
+    RGR |>
+      mutate(.rgr = suppressWarnings(as.numeric(.data[[rgr_val_col]]))) |>
+      group_by(across(all_of(group_vars))) |>
+      summarise(
+        n_rgr   = sum(is.finite(.rgr)),
+        mean_rgr= mean(.rgr, na.rm = TRUE),
+        sd_rgr  = sd(.rgr,  na.rm = TRUE),
+        se_rgr  = se(.rgr),
+        .groups = "drop"
+      )
+  } else tibble()
+
+# ---- Write CSV outputs ----
+readr::write_csv(AGR_sum, "AGR_summary.csv")
+readr::write_csv(RGR_sum, "RGR_summary.csv")
+
+# ---- Optional: join AGR + RGR by ID (wide) ----
+Combined_by_ID <- NULL
+if (!is.na(id_col) && !is.na(agr_val_col) && !is.na(rgr_val_col) &&
+    id_col %in% names(AGR) && id_col %in% names(RGR)) {
+  keep_left  <- unique(na.omit(c(id_col, species_col, treat_col, agr_val_col)))
+  keep_right <- unique(na.omit(c(id_col, rgr_val_col)))
+  Combined_by_ID <- AGR |> select(all_of(keep_left)) |>
+    left_join(RGR |> select(all_of(keep_right)), by = id_col, relationship = "many-to-many")
+  readr::write_csv(Combined_by_ID, "Combined_AGR_RGR_by_ID.csv")
+}
+
+# Clean treatment labels (ordered for legend)
+Combined_by_ID <- Combined_by_ID %>%
+  mutate(
+    treatment_name = case_when(
+      treatment == "A" ~ "Soil",
+      treatment == "B" ~ "Crushed glass (CG)",
+      treatment == "C" ~ "Sargassum only (SG)",
+      treatment == "D" ~ "3:1 CG to SG",
+      treatment == "E" ~ "1:3 CG to SG",
+      TRUE ~ as.character(treatment)
+    ),
+    treatment_name = factor(
+      treatment_name,
+      levels = c("Soil", "Crushed glass (CG)", "3:1 CG to SG", "1:3 CG to SG", "Sargassum only (SG)") #ordered it so that it goes from least Sargassum to most Sargassum additions
+    )
+  )
+
+
+# ---- Plots ----
+# Boxplots by Treatment (facet by Species if present)
+if (!is.na(agr_val_col) && !is.na(treat_col)) {
+  p_agr <- AGR |>
+    mutate(
+      .agr = suppressWarnings(as.numeric(.data[[agr_val_col]])),
+      .trt = .data[[treat_col]],
+      .sp  = if (!is.na(species_col)) .data[[species_col]] else NULL
+    ) |>
+    filter(is.finite(.agr)) |>
+    ggplot(aes(x = .trt, y = .agr)) +
+    geom_boxplot(outlier.shape = 16, outlier.size = 1.8) +
+    labs(
+      title = "AGR by Treatment",
+      x = "Treatment",
+      y = "AGR (g/day)"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  if (!is.na(species_col)) p_agr <- p_agr + facet_wrap(~ .sp, scales = "free_y")
+  print(p_agr)
+}
+
+if (!is.na(rgr_val_col) && !is.na(treat_col)) {
+  p_rgr <- RGR |>
+    mutate(
+      .rgr = suppressWarnings(as.numeric(.data[[rgr_val_col]])),
+      .trt = .data[[treat_col]],
+      .sp  = if (!is.na(species_col)) .data[[species_col]] else NULL
+    ) |>
+    filter(is.finite(.rgr)) |>
+    ggplot(aes(x = .trt, y = .rgr)) +
+    geom_boxplot(outlier.shape = 16, outlier.size = 1.8) +
+    labs(
+      title = "RGR by Treatment",
+      x = "Treatment",
+      y = "RGR (g g^-1 week^-1)"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  if (!is.na(species_col)) p_rgr <- p_rgr + facet_wrap(~ .sp, scales = "free_y")
+  print(p_rgr)
+}
+
+# Histograms (quick outlier scan)
+if (!is.na(agr_val_col)) {
+  AGR |>
+    mutate(.agr = suppressWarnings(as.numeric(.data[[agr_val_col]]))) |>
+    filter(is.finite(.agr)) |>
+    ggplot(aes(x = .agr)) +
+    geom_histogram(bins = 30) +
+    labs(title = "Distribution of AGR", x = "AGR (g/day)", y = "Count") +
+    theme_bw(base_size = 12) |>
+    print()
+}
+
+if (!is.na(rgr_val_col)) {
+  RGR |>
+    mutate(.rgr = suppressWarnings(as.numeric(.data[[rgr_val_col]]))) |>
+    filter(is.finite(.rgr)) |>
+    ggplot(aes(x = .rgr)) +
+    geom_histogram(bins = 30) +
+    labs(title = "Distribution of RGR", x = "RGR (g g^-1 week^-1)", y = "Count") +
+    theme_bw(base_size = 12) |>
+    print()
+}
+
+# ---- Console preview ----
+cat("\nSaved files:\n - AGR_summary.csv\n - RGR_summary.csv\n")
+if (!is.null(Combined_by_ID)) cat(" - Combined_AGR_RGR_by_ID.csv\n")
+cat("\nHead(AGR_summary):\n"); print(utils::head(AGR_sum, 10))
+cat("\nHead(RGR_summary):\n"); print(utils::head(RGR_sum, 10))
+if (!is.null(Combined_by_ID)) {
+  cat("\nHead(Combined_by_ID):\n"); print(utils::head(Combined_by_ID, 10))
+}
+```
+
+
+```{r}
+
+# Your canonical treatment order (adjust if your labels differ)
+trt_levels <- c("Soil", "Crushed glass (CG)", "3:1 CG to SG", "1:3 CG to SG", "Sargassum only (SG)")
+
+# ----- define shapes for each Treatment_Name (match your factor levels) -----
+shape_vals <- c(
+  "Soil"               = 0, # open square
+  "Crushed glass (CG)" = 17, # filled triangle
+  "Sargassum only (SG)"= 15, # filled square
+  "3:1 CG to SG"       = 18, # filled diamond
+  "1:3 CG to SG"       = 8   # asterick
+)
+
+# Make sure treatment is a factor in your order (if present)
+if (!is.na(treat_col) && treat_col %in% names(AGR)) {
+  AGR[[treat_col]] <- factor(AGR[[treat_col]], levels = trt_levels)
+}
+if (!is.na(treat_col) && treat_col %in% names(RGR)) {
+  RGR[[treat_col]] <- factor(RGR[[treat_col]], levels = trt_levels)
+}
+
+# Only keep mappings for the treatments that actually appear in your data
+present_levels <- na.omit(unique(c(
+  if (!is.na(treat_col) && treat_col %in% names(AGR)) levels(AGR[[treat_col]]) else NULL,
+  if (!is.na(treat_col) && treat_col %in% names(RGR)) levels(RGR[[treat_col]]) else NULL
+)))
+present_levels <- intersect(trt_levels, present_levels)
+pal_use   <- pal_treat[present_levels]
+shape_use <- shape_vals[present_levels]
+
+# ----- AGR boxplot + hollow jitter -----
+if (!is.na(agr_val_col) && !is.na(treat_col) &&
+    agr_val_col %in% names(AGR) && treat_col %in% names(AGR)) {
+
+  p_agr <- AGR |>
+    mutate(
+      .agr = suppressWarnings(as.numeric(.data[[agr_val_col]])),
+      .trt = .data[[treat_col]],
+      .sp  = if (!is.na(species_col) && species_col %in% names(AGR)) .data[[species_col]] else NULL
+    ) |>
+    filter(is.finite(.agr), !is.na(.trt)) |>
+    ggplot(aes(x = .trt, y = .agr, color = .trt)) +
+    # Hollow box outlines
+    geom_boxplot(fill = NA, outlier.shape = NA, linewidth = 0.6) +
+    # Hollow jittered points using treatment-specific shapes
+    geom_point(aes(shape = .trt),
+               position = position_jitter(width = 0.15, height = 0),
+               size = 1.8, stroke = 1.2, fill = NA) +
+    scale_color_manual(values = pal_use, name = "Treatment", drop = FALSE) +
+    scale_shape_manual(values = shape_use, name = "Treatment", drop = FALSE) +
+    labs(
+      title = "AGR by Treatment",
+      x = "Treatment",
+      y = "AGR (g/day)"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "right"
+    ) +
+    guides(color = guide_legend(override.aes = list(fill = NA)))
+  if (!is.null(p_agr$data$.sp)) p_agr <- p_agr + facet_wrap(~ .sp, scales = "free_y")
+  print(p_agr)
+
+  # Save to file for your thesis figures
+  ggsave("AGR_by_Treatment_okabeito.png", p_agr, width = 8, height = 5, dpi = 300)
+}
+
+# ----- RGR boxplot + hollow jitter -----
+if (!is.na(rgr_val_col) && !is.na(treat_col) &&
+    rgr_val_col %in% names(RGR) && treat_col %in% names(RGR)) {
+
+  p_rgr <- RGR |>
+    mutate(
+      .rgr = suppressWarnings(as.numeric(.data[[rgr_val_col]])),
+      .trt = .data[[treat_col]],
+      .sp  = if (!is.na(species_col) && species_col %in% names(RGR)) .data[[species_col]] else NULL
+    ) |>
+    filter(is.finite(.rgr), !is.na(.trt)) |>
+    ggplot(aes(x = .trt, y = .rgr, color = .trt)) +
+    geom_boxplot(fill = NA, outlier.shape = NA, linewidth = 0.6) +
+    geom_point(aes(shape = .trt),
+               position = position_jitter(width = 0.15, height = 0),
+               size = 1.8, stroke = 1.2, fill = NA) +
+    scale_color_manual(values = pal_use, name = "Treatment", drop = FALSE) +
+    scale_shape_manual(values = shape_use, name = "Treatment", drop = FALSE) +
+    labs(
+      title = "RGR by Treatment",
+      x = "Treatment",
+      y = "RGR (g g^-1 week^-1)"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "right"
+    ) +
+    guides(color = guide_legend(override.aes = list(fill = NA)))
+  if (!is.null(p_rgr$data$.sp)) p_rgr <- p_rgr + facet_wrap(~ .sp, scales = "free_y")
+  print(p_rgr)
+
+  ggsave("RGR_by_Treatment_okabeito.png", p_rgr, width = 8, height = 5, dpi = 300)
+}
+
+# ----- Optional: per-site variants (uncomment if you have `site`) -----
+# site_col <- if (!is.na(pick_col(AGR, c("site")))) "site" else NA_character_
+# If you want facets by site instead, swap `.sp` for `.site` in the code above.
+
+```
+
+
