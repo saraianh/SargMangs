@@ -26,3 +26,4 @@ write_csv(df_filled_site, "Data/Hutchinson_MonitoringAndIntake_Sites.csv")
 
 # Load later
 ALLDATA <- read_csv("Data/Hutchinson_MonitoringAndIntake_Sites.csv")
+
