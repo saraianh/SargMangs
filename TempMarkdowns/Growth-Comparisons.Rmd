@@ -10,6 +10,8 @@ params:
   export_dir: "exports"
 ---
 
+##Plot change in height instead of total height
+##How long does it take for a plant to die from sulfides?
 
 ```{r setup, message=FALSE, warning=FALSE}
 library(tidyverse)
