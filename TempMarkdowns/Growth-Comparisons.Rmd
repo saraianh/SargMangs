@@ -5,7 +5,7 @@ date: "2025-09-01"
 output:
   html_document:
     toc: true
-    toc_depth: 2
+    toc_depth: 6
 params:
   export_dir: "exports"
 ---
@@ -15,6 +15,7 @@ params:
 
 ```{r setup, message=FALSE, warning=FALSE}
 library(tidyverse)
+library(viridis)
 library(janitor)
 library(lme4)
 
@@ -60,6 +61,15 @@ shape_vals <- c(
   "100% Sargassum (SG)"= 15, # filled square
   "25% SG"       = 18, # filled diamond
   "75% SG"       = 8   # asterick
+)
+
+# Uses your okabe_ito vector (7 colors). Pick 5 distinct hues.
+color_vals <- c(
+  "Soil"                = okabe_ito[1], # green  (#009E73)
+  "Crushed glass"       = okabe_ito[6], # blue   (#0072B2)
+  "25% SG"              = okabe_ito[3], # orange (#E69F00)
+  "75% SG"              = okabe_ito[2], # vermil (#D55E00)
+  "100% Sargassum (SG)" = okabe_ito[7]  # purple (#CC79A7)
 )
 ```
 
@@ -311,7 +321,7 @@ ggplot(plot_step,
     #         position = position_dodge(width = 0.9),
     #         vjust = -0.5, size = 3) +
   facet_grid(rows = vars(species), cols = vars(metric), scales = "free_y") +
-  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_color_manual(values = color_vals, name = "Treatment") +
   scale_shape_manual(values = shape_vals, name = "Treatment") +
   scale_x_continuous(breaks = 0:6, labels = paste0("TP", 0:6)) +
   labs(
@@ -401,8 +411,8 @@ ggplot(growth_summary,
   facet_wrap(~ species, scales = "free_y") +
   labs(x = "Month", y = "Mean Total Height (cm)",
        title = "Total Height (Mean ± SD) by Species & Substrate") +
-    scale_color_manual(values = okabe_ito, name = "Treatment") +
-  scale_fill_manual(values = okabe_ito, name = "Treatment") +
+    scale_color_manual(values = color_vals, name = "Treatment") +
+  scale_fill_manual(values = color_vals, name = "Treatment") +
   scale_shape_manual(values = shape_vals, name = "Treatment") +
   scale_x_continuous(breaks = sort(unique(growth_summary$time_period))) +
   theme_minimal()
@@ -425,8 +435,8 @@ ggplot(growth_summary,
   facet_wrap(~ species, scales = "free_y") +
   labs(x = "Month", y = "Mean AGR (cm per TP)",
        title = "Absolute Growth Rate (Mean ± SD) by Species & Substrate") +
-  scale_color_manual(values = okabe_ito, name = "Treatment") +
-  scale_fill_manual(values = okabe_ito, name = "Treatment") +
+  scale_color_manual(values = color_vals, name = "Treatment") +
+  scale_fill_manual(values = color_vals, name = "Treatment") +
   scale_shape_manual(values = shape_vals, name = "Treatment") +
   scale_x_continuous(breaks = sort(unique(growth_summary$time_period))) +
   theme_minimal()
@@ -449,8 +459,8 @@ ggplot(growth_summary,
   facet_wrap(~ species, scales = "free_y") +
   labs(x = "Time Period", y = "Mean RGR (1 per TP)",
        title = "Relative Growth Rate (Mean ± SD) by Species & Substrate") +
-  scale_color_manual(values = okabe_ito, name = "Treatment") +
-  scale_fill_manual(values = okabe_ito, name = "Treatment") +
+  scale_color_manual(values = color_vals, name = "Treatment") +
+  scale_fill_manual(values = color_vals, name = "Treatment") +
   scale_shape_manual(values = shape_vals, name = "Treatment") +
   scale_x_continuous(breaks = sort(unique(growth_summary$time_period))) +
   theme_minimal()
@@ -526,8 +536,8 @@ ggplot(growth_summary,
                   fill = treatment_name), alpha = 0.15, color = NA) +
   facet_wrap(~ species, scales = "free_y") +
   labs(x = "Month", y = "Mean Total Height (cm)", title = "Total Height (Mean \u00B1 SE) by Species and Substrate") +
-  scale_color_manual(values = okabe_ito, name = "Treatment") +
-  scale_fill_manual(values = okabe_ito, name = "Treatment") +
+  scale_color_manual(values = color_vals, name = "Treatment") +
+  scale_fill_manual(values = color_vals, name = "Treatment") +
   scale_shape_manual(values = shape_vals, name = "Treatment") +
   theme_minimal()
 
