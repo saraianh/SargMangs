@@ -17,6 +17,10 @@ params:
 library(tidyverse)
 library(janitor)
 library(lme4)
+
+# Color palettes
+okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7")
+viridis_palette <- viridis(8)
 ```
 
 ---
@@ -32,7 +36,7 @@ surv <- surv%>%
   mutate(
 treatment_name = factor(
       treatment_name,
-      levels = c("Soil", "Crushed glass (CG)", "3:1 CG to SG", "1:3 CG to SG", "Sargassum only (SG)"))) #ordered it so that it goes from least Sargassum to most Sargassum additions
+      levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)"))) #ordered it so that it goes from least Sargassum to most Sargassum additions
       
 # Coerce to numeric safely
 num_cols <- c("rhma_height_1","rhma_height_2","rhma_epi_length",
@@ -49,6 +53,14 @@ surv <- surv %>%
          monitor_date = suppressWarnings(ymd(date_monitored)),
          uploaded_date = suppressWarnings(ymd(date_uploaded)))
 
+# ----- define shapes for each Treatment_Name (match your factor levels) -----
+shape_vals <- c(
+  "Soil"               = 0, # open square
+  "Crushed glass" = 17, # filled triangle
+  "100% Sargassum (SG)"= 15, # filled square
+  "25% SG"       = 18, # filled diamond
+  "75% SG"       = 8   # asterick
+)
 ```
 
 ---
@@ -88,7 +100,7 @@ surv_chk %>%
 ```
 
 
-### 2. Total Heights (substrate, pot, mean)
+### 2. Total Heights (substrate, pot, mean, change between tp0 and tp6)
 
 ```{r total-heights}
 surv <- surv %>%
@@ -111,14 +123,220 @@ surv <- surv %>%
   )
 
 surv_use <- surv %>% filter(!is.na(time_period))
+
+# --- Calculate change between TP0 and TP6 ---
+height_change <- surv_use %>%
+  filter(time_period %in% c(0, 6)) %>%
+  select(prop_id, species, treatment_name, time_period, total_height_mean_cm) %>%
+  pivot_wider(
+    names_from = time_period,
+    values_from = total_height_mean_cm,
+    names_prefix = "TP"
+  ) %>%
+  mutate(
+    height_change_tp0_tp6 = TP6 - TP0
+  )
+
+# 2) otherwise, keep as-is (assumes one row per prop_id × time_period)
+surv_use <- surv %>% filter(time_period %in% c(0, 6))
+
+height_change_tp0_tp6 <- surv_use %>%
+  select(prop_id, species, treatment_name, time_period,
+         total_height_substrate_cm, total_height_pot_cm) %>%
+  pivot_wider(
+    names_from  = time_period,
+    values_from = c(total_height_substrate_cm, total_height_pot_cm),
+    names_glue  = "{.value}_TP{time_period}"
+  ) %>%
+  mutate(
+    d_substrate_cm = total_height_substrate_cm_TP6 - total_height_substrate_cm_TP0,
+    d_pot_cm       = total_height_pot_cm_TP6       - total_height_pot_cm_TP0
+  )
+
+delta_summary <- height_change_tp0_tp6 %>%
+  group_by(species, treatment_name) %>%
+  summarise(
+    n              = dplyr::n(),
+    mean_d_sub_cm  = mean(d_substrate_cm, na.rm = TRUE),
+    sd_d_sub_cm    = sd(d_substrate_cm,   na.rm = TRUE),
+    mean_d_pot_cm  = mean(d_pot_cm,       na.rm = TRUE),
+    sd_d_pot_cm    = sd(d_pot_cm,         na.rm = TRUE),
+    .groups = "drop"
+  )
 ```
+
+```{r height-change-plots}
+# Substrate
+ggplot(delta_summary,
+       aes(x = treatment_name, y = mean_d_sub_cm,
+           fill = species)) +
+  geom_col(position = position_dodge()) +
+  geom_errorbar(aes(ymin = mean_d_sub_cm - sd_d_sub_cm,
+                    ymax = mean_d_sub_cm + sd_d_sub_cm),
+                width = 0.2,
+                position = position_dodge()) +
+  geom_text(aes(label = n),
+            position = position_dodge(width = 0.9),
+            vjust = -0.5, size = 3) +
+  labs(
+    title = "Height Change Above Substrate (TP6 - TP0)",
+    x = "Treatment",
+    y = "Height Change (cm)"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Pot
+ggplot(delta_summary,
+       aes(x = treatment_name, y = mean_d_pot_cm,
+           fill = species)) +
+  geom_col(position = position_dodge()) +
+  geom_errorbar(aes(ymin = mean_d_pot_cm - sd_d_pot_cm,
+                    ymax = mean_d_pot_cm + sd_d_pot_cm),
+                width = 0.2,
+                position = position_dodge()) +
+  geom_text(aes(label = n),
+            position = position_dodge(width = 0.9),
+            vjust = -0.5, size = 3) +
+  labs(
+    title = "Height Change Above Pot (TP6 - TP0)",
+    x = "Treatment",
+    y = "Height Change (cm)"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+### Show Height changes overtime
+## Step 1. Compute stepwise changes per propagule
+
+```{r}
+library(dplyr)
+
+# Start from your surv dataset with heights already calculated and it should have all the time_periods and not just tp0 and tp6 like surv_use
+height_steps <- surv %>%
+  filter(!is.na(time_period)) %>%
+  select(prop_id, species, treatment_name, time_period,
+         total_height_substrate_cm, total_height_pot_cm) %>%
+  arrange(prop_id, time_period) %>%
+  group_by(prop_id, species, treatment_name) %>%
+  mutate(
+    d_sub_cm = total_height_substrate_cm - lag(total_height_substrate_cm),
+    d_pot_cm = total_height_pot_cm       - lag(total_height_pot_cm),
+    interval_start = lag(time_period),
+    interval_end   = time_period
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(d_sub_cm), !is.na(d_pot_cm)) %>%
+  mutate(time_point = interval_end)   # assign to the ending TP
+```
+
+This gives you **stepwise changes per plant**. Example `interval`: `"TP0_to_TP1"`, `"TP1_to_TP2"`, etc.
+
+---
+
+## Step 2. Summarise by species × treatment × time point
+
+```{r}
+# Summarise by species × treatment × time point
+step_summary <- height_steps %>%
+  group_by(species, treatment_name, time_point) %>%
+  summarise(
+    n              = n(),
+    mean_d_sub_cm  = mean(d_sub_cm, na.rm = TRUE),
+    sd_d_sub_cm    = sd(d_sub_cm,   na.rm = TRUE),
+    mean_d_pot_cm  = mean(d_pot_cm, na.rm = TRUE),
+    sd_d_pot_cm    = sd(d_pot_cm,   na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+---
+
+## Step 3. Line plot
+
+To plot as a line graph across intervals, add a baseline and reshape to long format:
+
+```{r}
+library(tidyr)
+library(ggplot2)
+
+# Add baseline at TP0 (0 change)
+baseline <- step_summary %>%
+  distinct(species, treatment_name) %>%
+  mutate(time_point = 0,
+         n = NA,
+         mean_d_sub_cm = 0,
+         sd_d_sub_cm   = 0,
+         mean_d_pot_cm = 0,
+         sd_d_pot_cm   = 0)
+
+step_summary <- bind_rows(baseline, step_summary) %>%
+  arrange(species, treatment_name, time_point)
+
+
+plot_step <- step_summary %>%
+  pivot_longer(
+    cols = c(mean_d_sub_cm, mean_d_pot_cm),
+    names_to = "metric",
+    values_to = "mean_change"
+  ) %>%
+  mutate(
+    sd = dplyr::case_when(
+      metric == "mean_d_sub_cm" ~ sd_d_sub_cm,
+      metric == "mean_d_pot_cm" ~ sd_d_pot_cm
+    ),
+    metric = dplyr::recode(metric,
+                    "mean_d_sub_cm" = "Above Substrate",
+                    "mean_d_pot_cm" = "Above Pot"),
+    interval = factor(time_point, 
+                      levels = unique(height_steps$time_point)) # keeps order TP0→TP6
+  )
+```
+
+Line plot: same axes per species, separate lines per treatment
+
+```{r}
+ggplot(plot_step,
+       aes(x = time_point, y = mean_change,
+           color = treatment_name, shape = treatment_name,
+           group = treatment_name)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_change - sd,
+                    ymax = mean_change + sd),
+                width = 0.15) +
+    # geom_text(aes(label = n),
+    #         position = position_dodge(width = 0.9),
+    #         vjust = -0.5, size = 3) +
+  facet_grid(rows = vars(species), cols = vars(metric), scales = "free_y") +
+  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_shape_manual(values = shape_vals, name = "Treatment") +
+  scale_x_continuous(breaks = 0:6, labels = paste0("TP", 0:6)) +
+  labs(
+    title = "Stepwise Height Change per Time Period",
+    x = "Time Period",
+    y = "Mean Height Change (cm)"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+✅ This will give you **lines across intervals (TP0→TP1, …, TP5→TP6)** for both **Above Substrate** and **Above Pot**, faceted by species × treatment.
+
+
+Everything After this Point is questionable!!
+
+
+
 
 ---
 
 ### 3. Compute AGR & RGR (per plant)
 
 ```{r AGR-RGR}
-by_prop <- surv_use %>%
+by_prop <- surv %>%
   group_by(species, treatment_name, prop_id) %>%
   arrange(time_period, .by_group = TRUE) %>%
   mutate(
@@ -182,8 +400,10 @@ ggplot(growth_summary,
               alpha = 0.18, color = NA) +
   facet_wrap(~ species, scales = "free_y") +
   labs(x = "Month", y = "Mean Total Height (cm)",
-       color = "Substrate", fill = "Substrate",
        title = "Total Height (Mean ± SD) by Species & Substrate") +
+    scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_fill_manual(values = okabe_ito, name = "Treatment") +
+  scale_shape_manual(values = shape_vals, name = "Treatment") +
   scale_x_continuous(breaks = sort(unique(growth_summary$time_period))) +
   theme_minimal()
 ```
@@ -204,8 +424,10 @@ ggplot(growth_summary,
               alpha = 0.18, color = NA) +
   facet_wrap(~ species, scales = "free_y") +
   labs(x = "Month", y = "Mean AGR (cm per TP)",
-       color = "Substrate", fill = "Substrate",
        title = "Absolute Growth Rate (Mean ± SD) by Species & Substrate") +
+  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_fill_manual(values = okabe_ito, name = "Treatment") +
+  scale_shape_manual(values = shape_vals, name = "Treatment") +
   scale_x_continuous(breaks = sort(unique(growth_summary$time_period))) +
   theme_minimal()
 ```
@@ -226,8 +448,10 @@ ggplot(growth_summary,
               alpha = 0.18, color = NA) +
   facet_wrap(~ species, scales = "free_y") +
   labs(x = "Time Period", y = "Mean RGR (1 per TP)",
-       color = "Substrate", fill = "Substrate",
        title = "Relative Growth Rate (Mean ± SD) by Species & Substrate") +
+  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_fill_manual(values = okabe_ito, name = "Treatment") +
+  scale_shape_manual(values = shape_vals, name = "Treatment") +
   scale_x_continuous(breaks = sort(unique(growth_summary$time_period))) +
   theme_minimal()
 ```
@@ -301,8 +525,10 @@ ggplot(growth_summary,
                   ymax = mean_total_height_cm + sd_total_height_cm,
                   fill = treatment_name), alpha = 0.15, color = NA) +
   facet_wrap(~ species, scales = "free_y") +
-  labs(x = "Month", y = "Mean Total Height (cm)", color = "Substrate", fill = "Substrate",
-       title = "Total Height (Mean \u00B1 SE) by Species and Substrate") +
+  labs(x = "Month", y = "Mean Total Height (cm)", title = "Total Height (Mean \u00B1 SE) by Species and Substrate") +
+  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_fill_manual(values = okabe_ito, name = "Treatment") +
+  scale_shape_manual(values = shape_vals, name = "Treatment") +
   theme_minimal()
 
 ```

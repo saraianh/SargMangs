@@ -33,15 +33,15 @@ ALLDATA <- ALLDATA %>%
   mutate(
     Treatment_Name = case_when(
       Treatment == "A" ~ "Soil",
-      Treatment == "B" ~ "Crushed glass (CG)",
-      Treatment == "C" ~ "Sargassum only (SG)",
-      Treatment == "D" ~ "3:1 CG to SG",
-      Treatment == "E" ~ "1:3 CG to SG",
+      Treatment == "B" ~ "Crushed glass",
+      Treatment == "C" ~ "100% Sargassum (SG)",
+      Treatment == "D" ~ "75% SG",
+      Treatment == "E" ~ "25% SG",
       TRUE ~ as.character(Treatment)
     ),
     Treatment_Name = factor(
       Treatment_Name,
-      levels = c("Soil", "Crushed glass (CG)", "3:1 CG to SG", "1:3 CG to SG", "Sargassum only (SG)") #ordered it so that it goes from least Sargassum to most Sargassum additions
+      levels = c("Soil", "Crushed glass", "75% SG", "25% SG", "100% Sargassum (SG)") #ordered it so that it goes from least Sargassum to most Sargassum additions
     )
   )
 
@@ -50,7 +50,7 @@ ALLDATA <- ALLDATA %>%
   mutate(
     # Presence/absence (for simple contrasts)
     Sarg_present = if_else(
-      Treatment_Name %in% c("3:1 CG to SG", "1:3 CG to SG", "Sargassum only (SG)"),
+      Treatment_Name %in% c("75% SG", "25% SG", "100% Sargassum (SG)"),
       1L, 0L
     ),
     Sarg_group = factor(if_else(Sarg_present == 1L, "With Sargassum", "No Sargassum"),
@@ -59,10 +59,10 @@ ALLDATA <- ALLDATA %>%
     # Simple gradient coding you can use as a numeric predictor
     SG_pct = case_when(
       Treatment_Name == "Soil"               ~ 0,
-      Treatment_Name == "Crushed glass (CG)" ~ 0,
-      Treatment_Name == "3:1 CG to SG"       ~ 25,  # light Sargassum
-      Treatment_Name == "1:3 CG to SG"       ~ 75,  # heavy Sargassum
-      Treatment_Name == "Sargassum only (SG)"~ 100, # all Sargassum
+      Treatment_Name == "Crushed glass" ~ 0,
+      Treatment_Name == "25% SG"       ~ 25,  # light Sargassum
+      Treatment_Name == "75% SG"       ~ 75,  # heavy Sargassum
+      Treatment_Name == "100% Sargassum (SG)"~ 100, # all Sargassum
       TRUE ~ NA_real_
     )
   )
@@ -90,8 +90,8 @@ flagged_ids <- qc_resurrections %>% distinct(Species, Prop_ID)
 ALLDATA_no_flags <- ALLDATA_SurvBin %>%
   anti_join(flagged_ids, by = c("Species","Prop_ID"))
 
-# Export the full dataset of ALLDATA (all time periods) to CSV
-write_csv(ALLDATA_no_flags, "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\survivors_tp0-tp6.csv")
+# # Export the full dataset of ALLDATA (all time periods) to CSV
+# write_csv(ALLDATA_no_flags, "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\survivors_tp0-tp6.csv")
 ```
 
 
@@ -126,10 +126,10 @@ alive_summary <- alive_plants %>%
 # ----- define shapes for each Treatment_Name (match your factor levels) -----
 shape_vals <- c(
   "Soil"               = 0, # open square
-  "Crushed glass (CG)" = 17, # filled triangle
-  "Sargassum only (SG)"= 15, # filled square
-  "3:1 CG to SG"       = 18, # filled diamond
-  "1:3 CG to SG"       = 8   # asterick
+  "Crushed glass" = 17, # filled triangle
+  "100% Sargassum (SG)"= 15, # filled square
+  "25% SG"       = 18, # filled diamond
+  "75% SG"       = 8   # asterick
 )
 
 ggplot(alive_summary,
@@ -281,6 +281,9 @@ head(LARA_survivors); nrow(LARA_survivors)
 # Full histories for just those survivors (still no-flags)
 survivor_full_history <- ALLDATA_no_flags %>%
   inner_join(survivors_both, by = c("Species","Prop_ID"))
+
+# Export the full dataset of ALLDATA (all time periods) to CSV
+write.csv(survivor_full_history, "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\survivors_tp0-tp6.csv", row.names = FALSE)
 
 # Cohort survival over time, by treatment (uses your new Treatment_Name levels)
 cohort_survival <- survivor_full_history %>%
