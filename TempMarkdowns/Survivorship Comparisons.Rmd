@@ -41,7 +41,7 @@ ALLDATA <- ALLDATA %>%
     ),
     Treatment_Name = factor(
       Treatment_Name,
-      levels = c("Soil", "Crushed glass", "75% SG", "25% SG", "100% Sargassum (SG)") #ordered it so that it goes from least Sargassum to most Sargassum additions
+      levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)") #ordered it so that it goes from least Sargassum to most Sargassum additions
     )
   )
 
@@ -132,6 +132,15 @@ shape_vals <- c(
   "75% SG"       = 8   # asterick
 )
 
+# Uses your okabe_ito vector (7 colors). Pick 5 distinct hues.
+color_vals <- c(
+  "Soil"                = okabe_ito[1], # green  (#009E73)
+  "Crushed glass"       = okabe_ito[6], # blue   (#0072B2)
+  "25% SG"              = okabe_ito[3], # orange (#E69F00)
+  "75% SG"              = okabe_ito[2], # vermil (#D55E00)
+  "100% Sargassum (SG)" = okabe_ito[7]  # purple (#CC79A7)
+)
+
 ggplot(alive_summary,
        aes(x = Time_Period, y = mean_alive, color = Treatment_Name, shape = Treatment_Name, group = Treatment_Name)) +
   geom_line(linewidth = 1) +
@@ -144,7 +153,7 @@ ggplot(alive_summary,
     title = "Mean % Alive per Treatment (\u00B1SE) across Time Periods",
     x = "Month", y = "Mean % Alive"
   ) +
-  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_color_manual(values = color_vals, name = "Treatment") +
   scale_shape_manual(values = shape_vals, name = "Treatment") +
   theme_bw(base_size = 12)
 ```
@@ -183,7 +192,7 @@ ggplot(alive_tp6,
     title = "Percent Alive at Month 6 by Treatment",
     x = "Treatment", y = "Mean % Alive (\u00B1SE)"
   ) +
-  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_color_manual(values = color_vals, name = "Treatment") +
   scale_shape_manual(values = shape_vals, name = "Treatment") +
   theme_bw(base_size = 12) +
   theme(axis.text.x = element_text(angle = 20, hjust = 1))
@@ -212,8 +221,8 @@ ggplot(alive_tp6,
               aes(y = alive_pct, x = Treatment_Name, color = Treatment_Name),
               width = 0.12, height = 0, alpha = 0.7, size = 1.9, show.legend = FALSE) +
   facet_wrap(~Species) +
-  scale_fill_manual(values = okabe_ito, name = "Treatment") +
-  scale_color_manual(values = okabe_ito, guide = "none") +
+  scale_fill_manual(values = color_vals, name = "Treatment") +
+  scale_color_manual(values = color_vals, guide = "none") +
   coord_cartesian(ylim = c(0, 100)) +
   labs(
     title = "Percent Alive at Month 6 by Treatment (bars = mean \u00B1SE; dots = replicates)",
@@ -235,7 +244,7 @@ ggplot(alive_tp6,
                     ymax = mean_alive + se_alive),
                 width = 0.2) +
   facet_wrap(~Species) +
-  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_color_manual(values = color_vals, name = "Treatment") +
   scale_shape_manual(values = shape_vals, name = "Treatment") +
   coord_cartesian(ylim = c(0, 100)) +
   labs(
@@ -298,7 +307,7 @@ ggplot(cohort_survival,
   geom_line(linewidth = 1) +
   geom_point(size = 2) +
   facet_wrap(~Species) +
-  scale_color_manual(values = okabe_ito, name = "Treatment") +
+  scale_color_manual(values = color_vals, name = "Treatment") +
   coord_cartesian(ylim = c(0, 100)) +
   labs(
     title = "Cohort Survival (Alive at TP0 and TP6)",
