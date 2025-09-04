@@ -1,0 +1,277 @@
+---
+title: "Absolute (AGR) & Relative (RGR) Growth Rate – Clean Script"
+author: "Sarai Hutchinson"
+date: "2025-09-01"
+output:
+  html_document:
+    toc: true
+    toc_depth: 5
+---
+
+```{r setup}
+knitr::opts_chunk$set(message = FALSE)
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(janitor)
+  library(glue)
+})
+
+# --------- 0) Settings -------------------------------------------------------
+# File paths
+path_agr <- "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data\\AGR.csv"
+path_rgr <- "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data\\RGR.csv"
+
+# Visuals
+color_vals <- c(
+  "Soil"               = "#009E73", # green
+  "Crushed glass"      = "#CC79A7", # reddish
+  "25% SG"             = "#E69F00", # orange
+  "75% SG"             = "#56B4E9", # light blue
+  "100% Sargassum (SG)"= "#F0E442"  # yellow
+)
+
+
+shape_vals <- c(
+  "Soil"               = 0,  # hollow square
+  "Crushed glass"      = 17, # filled triangle (outline used with stroke)
+  "100% Sargassum (SG)"= 15, # filled square (outline used with stroke)
+  "25% SG"             = 18, # filled diamond (outline used with stroke)
+  "75% SG"             = 8   # star
+)
+treat_levels <- c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")
+```
+
+
+```{r functions}
+# --------- 1) Small utilities -----------------------------------------------
+pick_col <- function(df, candidates) {
+  # return the first candidate present in df, else NA_character_
+  hit <- intersect(candidates, names(df))
+  if (length(hit) == 0) NA_character_ else hit[1]
+}
+
+se <- function(x) {
+  x <- suppressWarnings(as.numeric(x))
+  x <- x[is.finite(x)]
+  if (length(x) <= 1) return(NA_real_)
+  sd(x) / sqrt(length(x))
+}
+
+add_species_from_id <- function(df, id_col) {
+  # infer species from ID prefix (L/l -> LARA; R/r -> RHMA)
+  pid <- trimws(as.character(df[[id_col]]))
+  sp  <- ifelse(grepl("^[lL]", pid), "LARA",
+         ifelse(grepl("^[rR]", pid), "RHMA", NA_character_))
+  insert_at <- match(id_col, names(df)) + 1L
+  df <- cbind(df[1:(insert_at - 1)],
+              Species = factor(sp, levels = c("LARA", "RHMA")),
+              df[insert_at:ncol(df)])
+  df
+}
+
+clean_treatment <- function(df, treat_col) {
+  df %>%
+    mutate(
+      treatment_name = case_when(
+        .data[[treat_col]] == "A" ~ "Soil",
+        .data[[treat_col]] == "B" ~ "Crushed glass",
+        .data[[treat_col]] == "C" ~ "100% Sargassum (SG)",
+        .data[[treat_col]] == "D" ~ "75% SG",
+        .data[[treat_col]] == "E" ~ "25% SG",
+        TRUE ~ as.character(.data[[treat_col]])
+      ),
+      treatment_name = factor(treatment_name, levels = treat_levels)
+    )
+}
+
+summarize_metric <- function(df, value_col, group_cols) {
+  df %>%
+    mutate(.val = suppressWarnings(as.numeric(.data[[value_col]]))) %>%
+    group_by(across(all_of(group_cols))) %>%
+    summarise(
+      n    = sum(is.finite(.val)),
+      mean = mean(.val, na.rm = TRUE),
+      sd   = sd(.val,   na.rm = TRUE),
+      se   = se(.val),
+      .groups = "drop"
+    )
+}
+
+plot_box <- function(df, value_col, treat_col, species_col = NA_character_,
+                     title = "Metric by Treatment", ylab = "Value (units)") {
+  p <- df %>%
+    mutate(
+      .val = suppressWarnings(as.numeric(.data[[value_col]])),
+      .trt = .data[[treat_col]],
+      .sp  = if (!is.na(species_col)) .data[[species_col]] else NULL
+    ) %>%
+    filter(is.finite(.val), !is.na(.trt)) %>%
+    # prefer the cleaned label if present
+    mutate(.trt_name = if ("treatment_name" %in% names(.)) treatment_name else .trt) %>%
+    ggplot(aes(x = .trt_name, y = .val,
+               color = .trt_name, shape = .trt_name, group = .trt_name)) +
+    # Hollow box outlines
+    geom_boxplot(fill = NA, outlier.shape = NA, linewidth = 0.6) +
+    # Hollow jittered points (stroke draws the outline)
+    geom_point(position = position_jitter(width = 0.15, height = 0),
+               size = 1.8, stroke = 0.8) +
+    scale_color_manual(values = okabe_ito, name = "Treatment") +
+    scale_shape_manual(values = shape_vals, name = "Treatment") +
+    labs(title = title, x = "Treatment", y = ylab) +
+    theme_bw(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "top")
+
+  if (!is.na(species_col) && species_col %in% names(df)) {
+    p <- p + facet_wrap(~ .sp, scales = "free_y")
+  }
+  p
+}
+```
+
+
+```{r read-data}
+# --------- 2) Read & inspect -------------------------------------------------
+AGR <- readr::read_csv(path_agr, show_col_types = FALSE) %>% clean_names()
+RGR <- readr::read_csv(path_rgr, show_col_types = FALSE) %>% clean_names()
+
+cat("AGR columns:\n"); print(names(AGR))
+cat("RGR columns:\n"); print(names(RGR))
+```
+
+
+```{r}
+# --------- 3) Resolve key columns -------------------------------------------
+# IDs
+id_col_agr <- pick_col(AGR, c("prop_id", "propid", "prop_id_num"))
+id_col_rgr <- pick_col(RGR, c("prop_id", "propid", "prop_id_num"))
+id_col     <- coalesce(id_col_agr, id_col_rgr)
+
+# Value columns
+agr_col <- pick_col(AGR, c("agr"))
+rgr_col <- pick_col(RGR, c("rgr"))
+
+# Species (will be added if missing)
+species_col_agr <- pick_col(AGR, c("species", "Species"))
+species_col_rgr <- pick_col(RGR, c("species", "Species"))
+
+# Treatment (raw code like A/B/C... or already a name)
+treat_col_agr <- pick_col(AGR, c("treatment", "treatment_name"))
+treat_col_rgr <- pick_col(RGR, c("treatment", "treatment_name"))
+
+# Add Species from ID if needed
+if (!is.na(id_col) && is.na(species_col_agr) && id_col %in% names(AGR))
+  AGR <- add_species_from_id(AGR, id_col)
+if (!is.na(id_col) && is.na(species_col_rgr) && id_col %in% names(RGR))
+  RGR <- add_species_from_id(RGR, id_col)
+
+species_col <- coalesce(pick_col(AGR, c("species", "Species")),
+                        pick_col(RGR, c("species", "Species")))
+treat_col   <- coalesce(treat_col_agr, treat_col_rgr)
+
+# Clean treatment labels (uniform across both tables if possible)
+if (!is.na(treat_col) && treat_col %in% names(AGR)) AGR <- clean_treatment(AGR, treat_col)
+if (!is.na(treat_col) && treat_col %in% names(RGR)) RGR <- clean_treatment(RGR, treat_col)
+
+cat("\nDetected columns:\n")
+cat(glue("ID: {id_col}\nSpecies: {species_col}\nTreatment: {treat_col}\n",
+         "AGR metric: {agr_col}\nRGR metric: {rgr_col}\n"))
+```
+
+
+```{r summaries}
+# --------- 4) Summaries ------------------------------------------------------
+group_vars <- c()
+if (!is.na(species_col)) group_vars <- c(group_vars, species_col)
+# prefer cleaned label for grouping
+treat_group_col <- if ("treatment_name" %in% names(AGR) || "treatment_name" %in% names(RGR))
+  "treatment_name" else treat_col
+if (!is.na(treat_group_col)) group_vars <- c(group_vars, treat_group_col)
+if (length(group_vars) == 0) group_vars <- id_col  # last-resort fallback
+
+AGR_sum <- if (!is.na(agr_col)) summarize_metric(AGR, agr_col, group_vars) else tibble()
+RGR_sum <- if (!is.na(rgr_col)) summarize_metric(RGR, rgr_col, group_vars) else tibble()
+
+# Write outputs
+readr::write_csv(AGR_sum, "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\AGR_summary.csv")
+readr::write_csv(RGR_sum, "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\RGR_summary.csv")
+```
+
+
+```{r}
+# --------- 5) Optional: join AGR + RGR by ID --------------------------------
+Combined_by_ID <- NULL
+if (!is.na(id_col) && id_col %in% names(AGR) && id_col %in% names(RGR) &&
+    !is.na(agr_col) && !is.na(rgr_col)) {
+  keep_left  <- unique(na.omit(c(id_col, species_col, treat_col, "treatment_name", agr_col)))
+  keep_right <- unique(na.omit(c(id_col, rgr_col)))
+  Combined_by_ID <- AGR %>%
+    select(all_of(keep_left)) %>%
+    left_join(RGR %>% select(all_of(keep_right)), by = id_col, relationship = "many-to-many")
+  readr::write_csv(Combined_by_ID, "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\Combined_AGR_RGR_by_ID.csv")
+}
+```
+
+## Plots
+```{r message=FALSE, echo=FALSE}
+# --------- 6) Plots ----------------------------------------------------------
+if (!is.na(agr_col) && !is.na(treat_col)) {
+  p_agr <- plot_box(
+    df = AGR, value_col = agr_col, treat_col = treat_group_col, species_col = species_col,
+    title = "Absolute Growth Rate (AGR) by Treatment",
+    ylab  = "AGR (g/day)"
+  ) +
+    scale_color_manual(values = color_vals, name = "Treatment") +
+    scale_shape_manual(values = shape_vals, name = "Treatment")
+  
+  print(p_agr)
+}
+
+if (!is.na(rgr_col) && !is.na(treat_col)) {
+  p_rgr <- plot_box(
+    df = RGR, value_col = rgr_col, treat_col = treat_group_col, species_col = species_col,
+    title = "Relative Growth Rate (RGR) by Treatment",
+    ylab  = expression(paste("RGR (growth/week)"))
+  ) +
+    scale_color_manual(values = color_vals, name = "Treatment") +
+    scale_shape_manual(values = shape_vals, name = "Treatment")
+  
+  print(p_rgr)
+}
+
+# Quick distribution scans
+if (!is.na(agr_col)) {
+  AGR %>%
+    mutate(.agr = suppressWarnings(as.numeric(.data[[agr_col]]))) %>%
+    filter(is.finite(.agr)) %>%
+    ggplot(aes(x = .agr)) +
+    geom_histogram(bins = 30) +
+    labs(title = "Distribution of Absolute Growth Rate", x = "AGR (g/day)", y = "Count") +
+    theme_bw(base_size = 12) %>%
+    print()
+}
+if (!is.na(rgr_col)) {
+  RGR %>%
+    mutate(.rgr = suppressWarnings(as.numeric(.data[[rgr_col]]))) %>%
+    filter(is.finite(.rgr)) %>%
+    ggplot(aes(x = .rgr)) +
+    geom_histogram(bins = 30) +
+    labs(title = "Distribution of Relative Growth Rate", x = "RGR (growth/week)", y = "Count") +
+    theme_bw(base_size = 12) %>%
+    print()
+}
+```
+
+
+```{r}
+# --------- 7) Console preview ------------------------------------------------
+cat("\nSaved files:\n - AGR_summary.csv\n - RGR_summary.csv\n")
+if (!is.null(Combined_by_ID)) cat(" - Combined_AGR_RGR_by_ID.csv\n")
+
+cat("\nHead(AGR_summary):\n"); print(utils::head(AGR_sum, 10))
+cat("\nHead(RGR_summary):\n"); print(utils::head(RGR_sum, 10))
+if (!is.null(Combined_by_ID)) {
+  cat("\nHead(Combined_by_ID):\n"); print(utils::head(Combined_by_ID, 10))
+}
+```
+
