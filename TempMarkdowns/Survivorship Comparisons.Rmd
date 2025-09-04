@@ -345,7 +345,7 @@ dat <- ALLDATA_no_flags %>%
   mutate(
     TP_num = as.integer(as.character(Time_Period)),
     # once-dead-always-dead (applied again here in case you model on this object)
-    Surv_Bin_clean = ave(Surv_Bin, Species, Prop_ID,
+    Survival = ave(Surv_Bin, Species, Prop_ID,
                          FUN = function(x) ifelse(cummin(x) == 0, 0L, 1L))
   )
 ```
@@ -356,13 +356,15 @@ dat <- ALLDATA_no_flags %>%
 # 
 # Binary survivorship ⇒ binomial. Check dispersion and residuals; if overdispersed, consider beta-binomial (glmmTMB).
 m_treat <- glmer(
-  Surv_Bin_clean ~ Treatment_Name + Time_Period + Species + (1|Site),
+  Survival ~ Treatment_Name + Time_Period + Species + (1|Site),
   data = dat, family = binomial
 )
 
 sim_m_treat <- simulateResiduals(m_treat, n = 1000)
 plot(sim_m_treat)                 # uniformity/outliers/dispersion
 testDispersion(sim_m_treat)       # overdispersion test
+
+#Tests for uniformity of data
 ```
 Dispersion ≈ 0.9 → very close to 1.
 
@@ -376,16 +378,47 @@ What it means for your analysis:
 
 You can proceed with this model (m_treat) for inference.
 
+```{r}
+m_sarg_glm <- glm(
+  Survival ~ Sarg_present + Time_Period,
+  data = dat,
+  family = binomial
+)
+summary(m_sarg_glm)
+```
+
+
 Next steps: use emmeans to extract treatment comparisons, Sargassum effects, and species-specific contrasts.
 
+Is survival dependent on Sargassum present and were making site a random effect. 
+##rename Survival to survival
+
 ```{r Sarg}
-# Presence/absence of Sargassum
+# Presence/absence of Sargassum affect survivorship
 m_sarg <- glmer(
-  Surv_Bin_clean ~ Sarg_present + Time_Period + Species + (1|Site),
+  Survival ~ Sarg_present + Time_Period + Species + (1|Prop_ID),
   data = dat, family = binomial
 )
+summary(m_sarg)
 
 emmeans(m_sarg, ~ Sarg_present | Species, type = "response")
+
+dat_LARA <- dat %>% filter(Species == "LARA")
+dat_RHMA <- dat %>% filter(Species == "RHMA")
+
+m_sarg_LARA <- glmer(
+  Survival ~ Sarg_present + Time_Period + (1|Site),
+  data = dat_LARA, family = binomial
+)
+
+summary(m_sarg_LARA)
+
+m_sarg_RHMA <- glmer(
+  Survival ~ Sarg_present + Time_Period + (1|Site),
+  data = dat_RHMA, family = binomial
+)
+
+summary(m_sarg_RHMA)
 ```
 
 
@@ -399,7 +432,7 @@ emm_treat
 # Pairwise comparisons (adjusted p-values)
 pairs(emm_treat, adjust = "tukey")
 ```
-Awesome — here’s a clean, drop-in workflow to build a **time-to-event dataset** from your long data and run **Kaplan–Meier curves** + a **Cox model with Site frailty** to answer “do some treatments have faster/slower deaths?” (Q4). It uses your existing objects (`dat` with `Surv_Bin_clean`, `Species`, `Treatment_Name`, `Site`, `Prop_ID`, `Time_Period`).
+
 
 ```{r}
 # ---- Packages ----
@@ -409,7 +442,7 @@ library(survminer)
 
 # ---- 1) Build one-row-per-plant survival dataset ----------------------
 # Assumes dat has:
-#   - Surv_Bin_clean (1=alive, 0=dead) after "once-dead-always-dead"
+#   - Survival (1=alive, 0=dead) after "once-dead-always-dead"
 #   - Time_Period as factor "0"..."6"
 #   - Species, Treatment_Name, Site, Replicate, Prop_ID
 
@@ -419,7 +452,7 @@ surv_dat <- dat %>%
   group_by(Species, Site, Replicate, Treatment_Name, Prop_ID) %>%
   summarise(
     # first time a 0 appears (death); subtract 1 so time reflects last alive TP
-    death_idx = { idx <- which(Surv_Bin_clean == 0); if (length(idx)) min(idx) else NA_integer_ },
+    death_idx = { idx <- which(Survival == 0); if (length(idx)) min(idx) else NA_integer_ },
     time      = ifelse(is.na(death_idx), max(TP_num, na.rm = TRUE), death_idx - 1L),
     event     = as.integer(!is.na(death_idx)),   # 1=death observed, 0=censored
     .groups = "drop"
@@ -434,7 +467,7 @@ table(surv_dat$Treatment_Name, useNA = "ifany")
 dat_clean <- dat %>%
   arrange(Species, Prop_ID, as.integer(as.character(Time_Period))) %>%
   group_by(Species, Prop_ID) %>%
-  mutate(Surv_Bin_strict = ifelse(cummin(Surv_Bin_clean) == 0, 0L, 1L)) %>%
+  mutate(Surv_Bin_strict = ifelse(cummin(Survival) == 0, 0L, 1L)) %>%
   ungroup()
 
 # Collapse to time-to-event
