@@ -75,6 +75,7 @@ ALLDATA_SurvBin <- ALLDATA %>%
   
 ```
 
+This one checks for any weird plants. I was able to go back and fix 5 of them based on the original datasheet but the other 3 LARA measurements are more tricky to fix since some of these were direct entry.
 ```{r Resurrections-QC}
 # ---- QC: 0→1 resurrections (factor-safe time order) ----
 qc_resurrections <- ALLDATA_SurvBin %>%
@@ -364,6 +365,19 @@ sim_m_treat <- simulateResiduals(m_treat, n = 1000)
 plot(sim_m_treat)                 # uniformity/outliers/dispersion
 testDispersion(sim_m_treat)       # overdispersion test
 
+#Separate species and run 2 tests
+
+m_treat2 <- glmer(
+  Survival ~ Treatment_Name + (1|Site) + (1|Time_Period),
+  data = dat_RHMA, family = binomial
+)
+summary(m_treat2)
+
+sim_m_treat2 <- simulateResiduals(m_treat2, n = 1000)
+plot(sim_m_treat2)                 # uniformity/outliers/dispersion
+testDispersion(sim_m_treat2)       # overdispersion test
+
+
 #Tests for uniformity of data
 ```
 Dispersion ≈ 0.9 → very close to 1.
@@ -591,4 +605,119 @@ cox_tv <- coxph(
   * Use the interaction terms (`Treatment_Name:Species`) to see if treatment effects differ between species.
 
 If you want, I can also generate a compact **report table** (CSV) with per-species HRs vs Soil and a small **KM figure** faceted by species.
+
+
+## I want to test just a chi-squared value
+```{r}
+library(dplyr)
+
+alive_6mo <- alive_plants %>%
+  filter(Time_Period == 6)
+
+df_counts <- alive_6mo %>%
+  group_by(Species, Treatment_Name) %>%
+  summarise(
+    Alive = sum(alive_n, na.rm = TRUE),
+    Dead  = sum(total_n - alive_n, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# RHMA table
+tab_rhma <- df_counts %>%
+  filter(Species == "RHMA") %>%
+  select(Alive, Dead) %>%
+  as.matrix()
+rownames(tab_rhma) <- df_counts %>%
+  filter(Species == "RHMA") %>%
+  pull(Treatment_Name)
+
+# LARA table
+tab_lara <- df_counts %>%
+  filter(Species == "LARA") %>%
+  select(Alive, Dead) %>%
+  as.matrix()
+rownames(tab_lara) <- df_counts %>%
+  filter(Species == "LARA") %>%
+  pull(Treatment_Name)
+
+chisq.test(tab_rhma)   # For red mangroves
+chisq.test(tab_lara)   # For white mangroves
+
+```
+
+Interpretation
+
+Null hypothesis (H₀): Survival proportion is the same across treatments.
+
+Alternative (H₁): At least one treatment differs in survivorship.
+
+A significant p value → substrate/treatment influences 6-month survivorship.
+
+
+Now we can find where that difference occured by doing a pairwise test
+```{r}
+# RHMA
+alive_rhma <- df_counts %>% filter(Species == "RHMA") %>% pull(Alive)
+total_rhma <- df_counts %>% filter(Species == "RHMA") %>% mutate(Total = Alive + Dead) %>% pull(Total)
+
+pairwise.prop.test(alive_rhma, total_rhma, p.adjust.method = "bonferroni")
+
+# LARA
+alive_lara <- df_counts %>% filter(Species == "LARA") %>% pull(Alive)
+total_lara <- df_counts %>% filter(Species == "LARA") %>% mutate(Total = Alive + Dead) %>% pull(Total)
+
+pairwise.prop.test(alive_lara, total_lara, p.adjust.method = "bonferroni")
+
+```
+
+Step 2. What This Gives You
+
+A table of pairwise p-values comparing survivorship between every pair of treatments.
+
+The Bonferroni adjustment controls for false positives since you’re doing many comparisons.
+
+Small adjusted p-values (< 0.05) mean those two treatments differ significantly in survivorship.
+
+
+
+
+
+
+Data with alive and dead
+```{r}
+AllPlantsClean<- ALLDATA_no_flags %>%
+  filter(Time_Period==6)
+
+RHMA_AllPlantsClean_tp6<- AllPlantsClean%>%
+  filter(Species=="RHMA", Treatment == "B"|Treatment == "C"| Treatment == "D"| Treatment == "E")
+
+LARA_AllPlantsClean_tp6<- AllPlantsClean%>%
+  filter(Species=="LARA")
+
+```
+
+when this is ran, it breaks because of complete separation of the data since the soil and crushed glass seedlings don't die. i will remove treatment B.
+```{r}
+RHMA_AllPlantsClean_tp6<- AllPlantsClean%>%
+  filter(Species=="RHMA", Treatment == "C"| Treatment == "D"| Treatment == "E")
+
+RHMA_AllPlantsClean_tp6$Site<- 
+  as.factor(RHMA_AllPlantsClean_tp6$Site)
+glm_RHMA <- glmer(
+  Surv_Bin ~ Treatment_Name + (1|Site),
+  data = RHMA_AllPlantsClean_tp6, family = binomial
+)
+summary(glm_RHMA)
+
+str(RHMA_AllPlantsClean_tp6)
+
+sim_m_treat2 <- simulateResiduals(m_treat2, n = 1000)
+plot(sim_m_treat2)                 # uniformity/outliers/dispersion
+testDispersion(sim_m_treat2)       # overdispersion test
+```
+```{r}
+# Check for complete separation or rare events
+xtabs(~ Treatment_Name + Surv_Bin, data = RHMA_AllPlantsClean_tp6)
+xtabs(~ Site + Surv_Bin, data = RHMA_AllPlantsClean_tp6)
+```
 
