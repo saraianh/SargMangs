@@ -112,6 +112,8 @@ surv_chk %>%
 
 ### 2. Total Heights (substrate, pot, mean, change between tp0 and tp6)
 
+I tried doing this with the height above substrate and the height above pot plus the epicotyl height for the RHMA but that proved to be unwise. The values are misleading since I failed to measure the height from the substrate to the top of the pot.
+
 ```{r total-heights}
 surv <- surv %>%
   mutate(
