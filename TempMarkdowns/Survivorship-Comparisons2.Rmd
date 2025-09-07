@@ -257,6 +257,57 @@ p_final_survival <- latest_survival %>%
 print(p_final_survival)
 ```
 
+```{r alive-plants}
+#Step 1: make a dataframe that has all alive plants with survivorship percentages
+alive_plants <- ALLDATA_clean %>%
+  group_by(Species, Treatment_Name, Replicate, Time_Period) %>%
+  summarise(
+    alive_n = sum(Surv_Bin == 1, na.rm = TRUE),
+    total_n = n(),
+    alive_pct = (alive_n / total_n) * 100,
+    .groups = "drop"
+  )%>%
+  arrange(Species, Treatment_Name, Time_Period, Replicate)
+
+# Ensure Time_Period is character only in this pipeline (don’t globally change earlier)
+tp_dat <- ALLDATA_clean %>%
+  mutate(Time_Period_chr = as.character(Time_Period))
+
+# Alive at TP0 and TP6 only
+alive_tp0_6 <- tp_dat %>%
+  filter(Time_Period_chr %in% c("0","6"), Surv_Bin == 1)
+
+# IDs alive at BOTH endpoints (species-safe)
+survivors_both <- alive_tp0_6 %>%
+  distinct(Species, Prop_ID, Time_Period_chr) %>%
+  count(Species, Prop_ID, name = "n_tp") %>%
+  filter(n_tp == 2) %>%
+  dplyr::select(Species, Prop_ID)
+
+# Quick counts per species
+survivor_counts <- survivors_both %>%
+  count(Species, name = "n_survivors")
+
+print(survivor_counts)
+# Expect similar to: RHMA ~ 266, LARA ~ 76
+
+# --- Step 3: Separate lists for RHMA and LARA ---------------------------
+RHMA_survivors <- survivors_both %>% filter(Species == "RHMA") %>% distinct(Prop_ID)
+LARA_survivors <- survivors_both %>% filter(Species == "LARA") %>% distinct(Prop_ID)
+
+# Peek
+head(RHMA_survivors); nrow(RHMA_survivors)
+head(LARA_survivors); nrow(LARA_survivors)
+
+# Full histories for just those survivors (still no-flags)
+survivor_full_history <- ALLDATA_clean %>%
+  inner_join(survivors_both, by = c("Species","Prop_ID"))
+
+# Export the full dataset of ALLDATA (all time periods) to CSV
+write.csv(survivor_full_history, "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\survivors_tp0-tp6.csv", row.names = FALSE)
+
+```
+
 ## Sargassum Effect
 
 ```{r sargassum-effect}
@@ -527,6 +578,8 @@ print(p_gradient)
 
 ## Kaplan-Meier Survival Analysis
 
+I feel like this is important to show how quickly they died across treatments. However, I need some more clarification on this.
+
 ```{r kaplan-meier}
 # Prepare data for survival analysis
 surv_data <- ALLDATA_clean %>%
@@ -540,22 +593,83 @@ surv_data <- ALLDATA_clean %>%
   ) %>%
   ungroup()
 
-# Create survival object
-surv_obj <- Surv(time = surv_data$survival_time, event = surv_data$final_status)
+# # Create survival object
+# surv_obj <- Surv(time = surv_data$survival_time, event = surv_data$final_status)
+# 
+# # Fit survival curves
+# fit <- survfit(surv_obj ~ Treatment_Name + Species, data = surv_data)
+# 
+# # Plot Kaplan-Meier curves
+# ggsurvplot(fit, 
+#            data = surv_data,
+#            pval = TRUE,
+#            conf.int = TRUE,
+#            risk.table = TRUE,
+#            risk.table.height = 0.3,
+#            palette = "jco",
+#            legend.title = "Treatment:Species",
+#            title = "Kaplan-Meier Survival Curves")
+# 
+# fit_lara <- survfit(Surv(survival_time, final_status) ~ Treatment_Name,
+#                     data = subset(surv_data, Species == "LARA"))
+# fit_rhma <- survfit(Surv(survival_time, final_status) ~ Treatment_Name,
+#                     data = subset(surv_data, Species == "RHMA"))
 
-# Fit survival curves
-fit <- survfit(surv_obj ~ Treatment_Name + Species, data = surv_data)
+# 1) Shorten labels (add a simple factor just for plotting)
+surv_data2 <- surv_data %>%
+  mutate(
+    Treatment = dplyr::recode(
+      Treatment_Name,
+      "Soil"                  = "Soil",
+      "Crushed glass"         = "CG",
+      "25% SG"                = "25% SG",
+      "75% SG"                = "75% SG",
+      "100% Sargassum (SG)"   = "100% SG"
+    ),
+    Species          = factor(as.character(Species)),
+    Treatment = factor(Treatment,
+                              levels = c("Soil", "CG", "25% SG", "75% SG", "100% SG"))
+  )
 
-# Plot Kaplan-Meier curves
-ggsurvplot(fit, 
-           data = surv_data,
-           pval = TRUE,
-           conf.int = TRUE,
-           risk.table = TRUE,
-           risk.table.height = 0.3,
-           palette = "jco",
-           legend.title = "Treatment:Species",
-           title = "Kaplan-Meier Survival Curves")
+# 2) Fit KM models per species
+lara_dat <- droplevels(subset(surv_data2, Species == "LARA"))
+rhma_dat <- droplevels(subset(surv_data2, Species == "RHMA"))
+
+fit_lara <- survfit(Surv(survival_time, final_status) ~ Treatment, data = lara_dat)
+fit_rhma <- survfit(Surv(survival_time, final_status) ~ Treatment, data = rhma_dat)
+
+# 3) Plot settings (consistent look)
+p_lara <- ggsurvplot(
+  fit_lara, data = lara_dat,
+  pval = TRUE, conf.int = TRUE,
+  risk.table = TRUE, risk.table.height = 0.22,
+  risk.table.fontsize = 3,
+  risk.table.y.text.col = TRUE, risk.table.y.text = FALSE,
+  legend.title = "Treatment",
+  title = "LARA — Kaplan–Meier",
+  palette = "jco"
+)
+
+p_rhma <- ggsurvplot(
+  fit_rhma, data = rhma_dat,
+  pval = TRUE, conf.int = TRUE,
+  risk.table = TRUE, risk.table.height = 0.22,
+  risk.table.fontsize = 3,
+  risk.table.y.text.col = TRUE, risk.table.y.text = FALSE,
+  legend.title = "Treatment",
+  title = "RHMA — Kaplan–Meier",
+  palette = "jco"
+)
+
+# 4) Arrange side-by-side with a shared legend at the bottom
+arrange_ggsurvplots(
+  list(p_lara, p_rhma),
+  ncol = 2, nrow = 1,
+  common.legend = TRUE,
+  legend = "bottom"
+)
+
+
 ```
 
 # Results Summary
@@ -568,7 +682,7 @@ survival_ranks <- latest_survival %>%
   group_by(Species) %>%
   arrange(desc(survival_rate)) %>%
   mutate(rank = row_number()) %>%
-  select(Species, Treatment_Name, survival_rate, rank)
+  dplyr::select(Species, Treatment_Name, survival_rate, rank)
 
 survival_ranks %>%
   kable(caption = "Treatment Rankings by Survival Rate",
@@ -584,9 +698,9 @@ survival_ranks %>%
 alpha <- 0.05
 expected_order <- c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")
 
-cat("="*60, "\n")
+cat(strrep("=", 60), "\n")
 cat("HYPOTHESIS TESTING RESULTS\n")
-cat("="*60, "\n\n")
+cat(strrep("=", 60), "\n")
 
 # H1: Red mangroves
 if(exists("rhma_chi")) {
@@ -697,26 +811,6 @@ Based on the comprehensive survivorship analysis:
 ```{r session-info}
 sessionInfo()
 ```
-# Conclusions
-
-Based on the comprehensive analysis of mangrove seedling survivorship and growth across different substrate treatments, we can draw the following conclusions:
-
-1. **Treatment Effects on Survivorship**: The analysis reveals whether substrate type significantly affects survivorship in both red (RHMA) and white (LARA) mangroves.
-
-2. **Growth Patterns**: Height measurements over time show differential growth rates across treatments, with implications for restoration practices.
-
-3. **Sargassum Impact**: The presence and concentration of Sargassum in the substrate shows a clear gradient effect on both survivorship and growth.
-
-4. **Species-Specific Responses**: Red and white mangroves may respond differently to the same treatments, suggesting species-specific restoration strategies may be needed.
-
-5. **Practical Implications**: The results support/challenge the hypothesis that traditional potting soil provides optimal conditions for mangrove restoration, with important implications for using alternative substrates like crushed glass and Sargassum.
-
-# Session Information
-
-```{r session-info}
-sessionInfo()
-```
-
 
 Based on the statistical analyses:
 
@@ -729,6 +823,8 @@ Based on the statistical analyses:
   - Overall treatment effect: [Significant/Not significant] (p = [value])
   - Treatment ranking observed: [List actual order from your data]
   - Expected ranking: Soil > Crushed glass > 75% SG > 25% SG > 100% Sargassum (SG)
+  -Actual RHMA ranking: Soil > Crushed glass > 75% SG > 100% Sargassum (SG) > 25% SG
+  -Actual LARA ranking: Soil > Crushed glass > 75% SG > 25% SG > 100% Sargassum (SG)
   - Survival curve differences: [Significant/Not significant] (Log-rank p = [value])
 
 **Key Survivorship Findings for Red Mangroves:**
@@ -804,4 +900,4 @@ Based on the statistical analyses:
 
 ---
 
-*Analysis completed with `r nrow(distinct(data, Species, Prop_ID))` unique plants across `r length(unique(data$Treatment_Name))` treatments over `r length(unique(data$Time_Period))` time periods. Quality control removed `r nrow(flagged_ids)` plants with data inconsistencies.*
+*Analysis completed with `r nrow(distinct(ALLDATA_clean, Species, Prop_ID))` unique plants across `r length(unique(ALLDATA_clean$Treatment_Name))` treatments over `r length(unique(ALLDATA_clean$Time_Period))` time periods. Quality control removed `r nrow(flagged_ids)` plants with data inconsistencies.*
