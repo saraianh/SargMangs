@@ -1,0 +1,255 @@
+---
+title: "Map_of_St_John"
+author: "Sarai Hutchinson"
+date: "09/07/2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("~/UVI/Thesis.Work/SargMangs")
+```
+
+```{r packages}
+#for maps
+library(ggplot2)
+#library(rgdal); packageVersion("rgdal") *removed 2023
+library(lubridate); packageVersion("lubridate")
+library(sf); packageVersion("sf")
+#library(rgeos); packageVersion("rgeos") *removed 2023
+library(here); packageVersion("here")
+library(ggspatial); packageVersion("ggspatial")
+library(rnaturalearth); packageVersion("rnaturalearth")
+library(rnaturalearthdata); packageVersion("rnaturalearthdata")
+```
+
+## Figure 1
+
+### Sampling locations at Existing and Outbreak locations in St. John, U.S. Virgin Islands
+
+This code generates a larger map of St. John, USVI and a map of the greater Caribbean with a dot where the USVI are located. After saving these two images, they can be combined together in another application, such as Adobe Illustrator to make the figure found in the Manuscript. 
+```{r}
+metadata <- read.table("C:/Users/sarai/OneDrive/Email attachments/Documents/UVI/Thesis.Work/SargMangs/Data/SH24-site-metadata.txt", sep = "\t", header = TRUE) #load metadata
+
+sites <- data.frame("site" = metadata$Site, "lat" = metadata$Lat, "lon" = metadata$Long)
+```
+
+# Use shapefile obtained from: <https://earthworks.stanford.edu/catalog/stanford-vt021tk4894>
+
+# Shapefile is too large for GitHub. Download and put in your own folder, and adjust the path to that Shapefile folder.
+```{r}
+shapefile <- st_read("~/UVI/Thesis.Work/SargMangs/Data/shapefile-for-map", "vt021tk4894") 
+shape_df <- fortify(shapefile) # Create the shapefile you will use in ggplot2
+
+usa <- st_read("~/UVI/Thesis.Work/SargMangs/Data//shapefile-for-map", "vt021tk4894") 
+usa
+```
+
+#This is where I create a global map and pin point the location of St Thomas, USVI. I then customized the map of St Thomas by adding the longitude and lattitudes of the locations of Perseverance Bay, Oasis Cove, Compass Point, Vessup Bay and Mandahl Bay as 'x' and 'y' variables.The xlim and ylim were the locations points on the map. The map was also labelled by using lat long as well.
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf") 
+class(world)
+
+ggplot(data = world) + geom_sf(fill = "black", color = "black") + 
+  coord_sf(xlim = c(-90.3, -59.5), ylim = c(10, 30.7), expand = FALSE) + 
+  labs(x = "Longitude", y = "Latitude") + 
+  geom_point(aes(y = 18.342194, x = -64.911193), pch = 21, fill ="blue", size = 7) + 
+  theme(panel.grid.major = element_line(color = gray(.7), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue"))+ 
+  theme(axis.text = element_text(size = 12))
+
+ggsave("Map of Caribbean Area.png") 
+ggsave("Map of Caribbean Area.png", width = 7.5, height = 5, dpi = "retina")
+```
+
+I created an interactive map of the locations using leaflet. It shows when and where the different species were collected. I then created a static map as well with the same information but it doesn't have the exact time but rather number of visits.
+```{r}
+# install.packages(c(
+#   "dplyr","lubridate","leaflet","htmltools","ggplot2",
+#   "sf","rnaturalearth","rnaturalearthdata","ggspatial","ggrepel"
+# ), Ncpus = 2)
+
+library(dplyr)
+library(lubridate)
+library(leaflet)
+library(htmltools)
+library(ggplot2)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggspatial)
+library(ggrepel)
+
+# ---- 1) Data ----
+dat <- read.table("C:/Users/sarai/OneDrive/Email attachments/Documents/UVI/Thesis.Work/SargMangs/Data/SH24-site-metadata.txt", sep = "\t", header = TRUE) #load metadata
+
+dat$date <- mdy(dat$Date)
+
+# Okabe–Ito palette
+okabe_ito <- c("#009E73","#D55E00","#E69F00","#56B4E9","#F0E442","#0072B2","#CC79A7")
+site_lvls  <- sort(unique(dat$Site))
+site_cols  <- setNames(okabe_ito[seq_along(site_lvls)], site_lvls)
+sp_lvls <- sort(unique(dat$Species))
+pal <- colorFactor(palette = c("#D55E00","#0072B2","#009E73","#CC79A7")[seq_along(sp_lvls)],
+                   domain  = sp_lvls)
+
+# One row per site for labeling + visit counts
+site_counts <- dat |>
+  dplyr::count(Site, Site.Name, Long, Lat, name = "n_visits") |>
+  dplyr::arrange(desc(n_visits))
+
+pts_sf    <- st_as_sf(dat, coords = c("Long","Lat"), crs = 4326)
+labels_sf <- st_as_sf(site_counts, coords = c("Long","Lat"), crs = 4326)
+
+# ---- 2) Interactive map (Leaflet) ----
+m<- leaflet(dat) |>
+  addProviderTiles(providers$CartoDB.Positron) |>
+  addCircleMarkers(
+    lng = ~Long, lat = ~Lat,
+    color     = ~unname(site_cols[Site]),
+    fillColor = ~unname(site_cols[Site]),
+    radius = 6, stroke = TRUE, weight = 2, fillOpacity = 0.9,
+    label = ~lapply(
+      sprintf("<b>%s (%s)</b><br/>%s<br/>%.5f, %.5f",
+              Site.Name, Site, format(date, "%Y-%m-%d"), Lat, Long), HTML),
+    clusterOptions = markerClusterOptions(spiderfyOnMaxZoom = TRUE)
+  ) |>
+  addLegend("bottomright",
+            colors = unname(site_cols), labels = names(site_cols),
+            title = "Sites")
+
+m
+
+# ---- 3) Static, publication-ready map (ggplot2 + sf) ----
+
+xlim <- range(dat$Long, na.rm = TRUE) + c(-0.06, 0.06)
+ylim <- range(dat$Lat,  na.rm = TRUE) + c(-0.06, 0.06)
+land <- rnaturalearth::ne_countries(scale = 50, returnclass = "sf")
+
+# SHAPES for Species (this replaces the incorrect use of `pal`)
+species_lvls   <- sort(unique(dat$Species))
+species_shapes <- setNames(c(21, 24, 22, 25)[seq_along(species_lvls)], species_lvls)
+
+
+# View window from data (just sets the plot window; does NOT crop data)
+pad <- 0.08
+bb <- c(
+  xmin = min(dat$Long, na.rm = TRUE) - pad,
+  xmax = max(dat$Long, na.rm = TRUE) + pad,
+  ymin = min(dat$Lat,  na.rm = TRUE) - pad,
+  ymax = max(dat$Lat,  na.rm = TRUE) + pad
+)
+
+# small jitter so overlapping visits at the same coordinate separate a hair
+pos <- position_jitter(width = 0.00035, height = 0.00035)
+
+# Plot, sizing points by n_visits and labeling once per site
+ggplot() +
+  geom_sf(data = usa, fill = "grey95", color = "grey70", linewidth = 0.3) +
+
+  # 1) draw visit totals first as HOLLOW RINGS (won't cover species markers)
+  geom_point(
+    data = site_counts,
+    aes(Long, Lat, size = n_visits, color = Site),
+    shape = 21, fill = NA, stroke = 1.2, alpha = 0.9
+  ) +
+
+  # 2) draw per-visit points on TOP with shape = Species, fill = Site
+  geom_point(
+    data = dat,
+    aes(Long, Lat, shape = Species, fill = Site, color = Site),
+    stroke = 0.7, size = 3, position = pos
+  ) +
+
+  ggrepel::geom_label_repel(
+    data = site_counts,
+    aes(Long, Lat, label = paste0(Site.Name, " (", Site, "): ", n_visits,
+                                  " visit", ifelse(n_visits > 1, "s", ""))),
+    size = 3, label.padding = unit(0.15, "lines"),
+    segment.size = 0.3, min.segment.length = 0, seed = 42
+  ) +
+  coord_sf(xlim = c(bb["xmin"], bb["xmax"]), ylim = c(bb["ymin"], bb["ymax"]), expand = FALSE) +
+  ggspatial::annotation_scale(location = "bl", width_hint = 0.25) +
+  ggspatial::annotation_north_arrow(location = "bl", which_north = "true",
+                                    style = north_arrow_fancy_orienteering) +
+
+  # legends
+  scale_fill_manual(values = site_cols, guide = "none") +        # hide fill legend
+  scale_colour_manual(values = site_cols, name = "Site") +       # show color legend
+  scale_shape_manual(values = species_shapes, name = "Species") +
+  scale_size(range = c(3, 6),
+             breaks = sort(unique(site_counts$n_visits)),
+             name = "Visits") +
+    guides(
+      colour = guide_legend(order = 1, override.aes = list(shape = 21, fill = "white", size = 4)),
+      shape  = guide_legend(order = 2),
+      size   = guide_legend(order = 3)
+    ) +
+  labs(title = "Mangrove Collection Sites — St. Thomas, USVI",
+       subtitle = "Per-visit points: shape = Species, fill = Site; hollow ring = total visits per site",
+       x = "Longitude", y = "Latitude") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "right")
+
+```
+
+This code has the leaflet with both species present.
+```{r}
+library(dplyr)
+
+# (optional) tiny offset so overlapping samples at the same site are visible
+dat_map <- dat %>%
+  group_by(Site, Site.Name, Long, Lat, Species) %>%
+  mutate(idx = row_number(),
+         Long_j = Long + (idx-1)*0.00025,
+         Lat_j  = Lat  + (idx-1)*0.00025) %>%
+  ungroup()
+
+m <- leaflet(dat_map) |>
+  addProviderTiles(providers$CartoDB.Positron) |>
+  addCircleMarkers(
+    lng = ~Long_j, lat = ~Lat_j,
+    color = ~pal(Species), fillColor = ~pal(Species),
+    radius = 6, stroke = TRUE, weight = 2, fillOpacity = 0.9,
+    group = ~Species,
+    label = ~lapply(
+      sprintf("<b>%s</b> — %s<br/>%s<br/>%.5f, %.5f",
+              Site.Name, Species, format(date, "%Y-%m-%d"), Lat, Long), HTML)
+  ) |>
+  addLegend("bottomright", pal = pal, values = ~Species, title = "Species") |>
+  addLayersControl(
+    overlayGroups = sp_lvls,
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+m  # print to view (Viewer pane or browser)
+```
+
+This one creates a map that is publication ready.
+```{r}
+world <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+
+# bounds around your points
+pad  <- 0.06
+xlim <- range(dat$Long, na.rm = TRUE) + c(-pad, pad)
+ylim <- range(dat$Lat,  na.rm = TRUE) + c(-pad, pad)
+
+# one label per site; keep all points for per-visit dots
+site_lbl <- dat |> dplyr::distinct(Site, Site.Name, Long, Lat)
+
+ggplot(usa) +
+  geom_sf(fill = "grey95", color = "grey60", linewidth = 0.3) +
+  geom_point(data = dat, aes(Long, Lat, color = Species, shape = Species),
+             size = 3, alpha = 0.9, position = position_jitter(width = 0.0004, height = 0.0004)) +
+  ggrepel::geom_text_repel(data = site_lbl, aes(Long, Lat, label = Site.Name),
+                           size = 3, min.segment.length = 0, seed = 42) +
+  coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+  scale_color_manual(values = c(RHMA="#D55E00", LARA="#0072B2")) +
+  labs(title = "Collection Sites of Propagules and Seeds — St. Thomas, USVI",
+       x = "Longitude", y = "Latitude", color = "Species", shape = "Species") +
+  annotation_scale(location = "tr", width_hint = 0.25) +
+  ggspatial::annotation_north_arrow(location = "bl", which_north = "true",
+                                    style = north_arrow_fancy_orienteering) +
+  theme(panel.grid.major = element_line(color = gray(.7), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue"))
+```
+
+
