@@ -250,6 +250,8 @@ ggplot(usa) +
   ggspatial::annotation_north_arrow(location = "bl", which_north = "true",
                                     style = north_arrow_fancy_orienteering) +
   theme(panel.grid.major = element_line(color = gray(.7), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue"))
+
+ggsave("Map of St. Thomas.png", width = 7.5, height = 5, dpi = "retina")
 ```
 
 
