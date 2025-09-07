@@ -484,10 +484,372 @@ p_height_box +
 
 ```
 
-
 # Relative Growth Rate Analysis
 
+This is based on the plants used in the biomass analysis
+
 ## Calculate RGR
+
+```{r}
+# --------- 0) Palettes, levels, pkgs used in this section -------------------
+library(dplyr); library(ggplot2); library(janitor); library(glue); library(readr)
+
+# File paths
+path_agr <- "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data\\AGR.csv"
+path_rgr <- "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data\\RGR.csv"
+
+okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7", "#999999")
+shape_vals <- c( # hollow-capable shapes
+  "Soil"                = 22,
+  "Crushed glass"       = 24,
+  "25% SG"              = 23,
+  "75% SG"              = 25,
+  "100% Sargassum (SG)" = 21
+)
+
+color_vals <- c(
+  "Soil"                = okabe_ito[1], # green  (#009E73)
+  "Crushed glass"       = okabe_ito[6], # blue   (#0072B2)
+  "25% SG"              = okabe_ito[3], # orange (#E69F00)
+  "75% SG"              = okabe_ito[2], # vermil (#D55E00)
+  "100% Sargassum (SG)" = okabe_ito[7]  # purple (#CC79A7)
+)
+treat_levels <- c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")
+
+# --------- 1) Small utilities -----------------------------------------------
+pick_col <- function(df, candidates) {
+  # return the first candidate present in df, else NA_character_
+  hit <- intersect(candidates, names(df))
+  if (length(hit) == 0) NA_character_ else hit[1]
+}
+
+se <- function(x) {
+  x <- suppressWarnings(as.numeric(x))
+  x <- x[is.finite(x)]
+  if (length(x) <= 1) return(NA_real_)
+  sd(x) / sqrt(length(x))
+}
+
+add_species_from_id <- function(df, id_col) {
+  # infer species from ID prefix (L/l -> LARA; R/r -> RHMA)
+  pid <- trimws(as.character(df[[id_col]]))
+  sp  <- ifelse(grepl("^[lL]", pid), "LARA",
+         ifelse(grepl("^[rR]", pid), "RHMA", NA_character_))
+  insert_at <- match(id_col, names(df)) + 1L
+  df <- cbind(df[1:(insert_at - 1)],
+              Species = factor(sp, levels = c("LARA", "RHMA")),
+              df[insert_at:ncol(df)])
+  df
+}
+
+clean_treatment <- function(df, treat_col) {
+  df %>%
+    mutate(
+      treatment_name = case_when(
+        .data[[treat_col]] == "A" ~ "Soil",
+        .data[[treat_col]] == "B" ~ "Crushed glass",
+        .data[[treat_col]] == "C" ~ "100% Sargassum (SG)",
+        .data[[treat_col]] == "D" ~ "75% SG",
+        .data[[treat_col]] == "E" ~ "25% SG",
+        TRUE ~ as.character(.data[[treat_col]])
+      ),
+      treatment_name = factor(treatment_name, levels = treat_levels)
+    )
+}
+
+summarize_metric <- function(df, value_col, group_cols) {
+  df %>%
+    mutate(.val = suppressWarnings(as.numeric(.data[[value_col]]))) %>%
+    group_by(across(all_of(group_cols))) %>%
+    summarise(
+      n    = sum(is.finite(.val)),
+      mean = mean(.val, na.rm = TRUE),
+      sd   = sd(.val,   na.rm = TRUE),
+      se   = se(.val),
+      .groups = "drop"
+    )
+}
+
+plot_box <- function(df, value_col, treat_col, species_col = NA_character_,
+                     title = "Metric by Treatment", ylab = "Value (units)") {
+  p <- df %>%
+    mutate(
+      .val = suppressWarnings(as.numeric(.data[[value_col]])),
+      .trt = .data[[treat_col]],
+      .sp  = if (!is.na(species_col)) .data[[species_col]] else NULL
+    ) %>%
+    filter(is.finite(.val), !is.na(.trt)) %>%
+    # prefer the cleaned label if present
+    mutate(.trt_name = if ("treatment_name" %in% names(.)) treatment_name else .trt) %>%
+    ggplot(aes(x = .trt_name, y = .val,
+               color = .trt_name, shape = .trt_name, group = .trt_name)) +
+    # Hollow box outlines
+    geom_boxplot(fill = NA, outlier.shape = NA, linewidth = 0.6) +
+    # Hollow jittered points (stroke draws the outline)
+    geom_point(position = position_jitter(width = 0.15, height = 0),
+               size = 1.8, stroke = 0.8) +
+    scale_color_manual(values = okabe_ito, name = "Treatment") +
+    scale_shape_manual(values = shape_vals, name = "Treatment") +
+    labs(title = title, x = "Treatment", y = ylab) +
+    theme_bw(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "top")
+
+  if (!is.na(species_col) && species_col %in% names(df)) {
+    p <- p + facet_wrap(~ .sp, scales = "free_y")
+  }
+  p
+}
+
+# --------- 2) Read & inspect -------------------------------------------------
+AGR <- readr::read_csv(path_agr, show_col_types = FALSE) %>% janitor::clean_names()
+RGR <- readr::read_csv(path_rgr, show_col_types = FALSE) %>% janitor::clean_names()
+
+cat("AGR columns:\n"); print(names(AGR))
+cat("RGR columns:\n"); print(names(RGR))
+
+# --------- 3) Resolve key columns -------------------------------------------
+id_col_agr <- pick_col(AGR, c("prop_id"))
+id_col_rgr <- pick_col(RGR, c("prop_id"))
+id_col     <- dplyr::coalesce(id_col_agr, id_col_rgr)
+
+agr_col <- pick_col(AGR, c("agr"))
+rgr_col <- pick_col(RGR, c("rgr"))
+
+species_col_agr <- pick_col(AGR, c("species", "Species"))
+species_col_rgr <- pick_col(RGR, c("species", "Species"))
+
+treat_col_agr <- pick_col(AGR, c("treatment", "treatment_name"))
+treat_col_rgr <- pick_col(RGR, c("treatment", "treatment_name"))
+
+# Add Species from ID if missing
+if (!is.na(id_col) && is.na(species_col_agr) && id_col %in% names(AGR)) AGR <- add_species_from_id(AGR, id_col)
+if (!is.na(id_col) && is.na(species_col_rgr) && id_col %in% names(RGR)) RGR <- add_species_from_id(RGR, id_col)
+
+species_col <- dplyr::coalesce(pick_col(AGR, c("species", "Species")),
+                               pick_col(RGR, c("species", "Species")))
+treat_col   <- dplyr::coalesce(treat_col_agr, treat_col_rgr)
+
+# Clean treatment labels
+if (!is.na(treat_col) && treat_col %in% names(AGR)) AGR <- clean_treatment(AGR, treat_col)
+if (!is.na(treat_col) && treat_col %in% names(RGR)) RGR <- clean_treatment(RGR, treat_col)
+
+cat("\nDetected columns:\n")
+cat(glue("ID: {id_col}\nSpecies: {species_col}\nTreatment: {treat_col}\n",
+         "AGR metric: {agr_col}\nRGR metric: {rgr_col}\n"))
+
+# --------- 4) Summaries ------------------------------------------------------
+group_vars <- c()
+if (!is.na(species_col)) group_vars <- c(group_vars, species_col)
+treat_group_col <- if ("treatment_name" %in% names(AGR) || "treatment_name" %in% names(RGR))
+  "treatment_name" else treat_col
+if (!is.na(treat_group_col)) group_vars <- c(group_vars, treat_group_col)
+if (length(group_vars) == 0) group_vars <- id_col
+
+AGR_sum <- if (!is.na(agr_col)) summarize_metric(AGR, agr_col, group_vars) else tibble()
+RGR_sum <- if (!is.na(rgr_col)) summarize_metric(RGR, rgr_col, group_vars) else tibble()
+
+# --------- 5) Optional: join AGR + RGR by ID --------------------------------
+Combined_by_ID <- NULL
+# columns that actually exist (robust)
+cols_left  <- intersect(na.omit(unique(c(id_col, species_col, treat_col, "treatment_name", agr_col))), names(AGR))
+cols_right <- intersect(na.omit(unique(c(id_col, rgr_col))), names(RGR))
+
+if (!is.na(id_col) && id_col %in% names(AGR) && id_col %in% names(RGR) &&
+    !is.na(agr_col) && !is.na(rgr_col)) {
+
+  Combined_by_ID <- dplyr::left_join(
+    dplyr::select(AGR, dplyr::all_of(cols_left)),
+    dplyr::select(RGR, dplyr::all_of(cols_right)),
+    by = setNames(id_col, id_col)        # explicit key mapping
+    # relationship = "many-to-many"      # keep ONLY if dplyr >= 1.1.0
+  )
+
+  readr::write_csv(
+    Combined_by_ID,
+    "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\Combined_AGR_RGR_by_ID.csv"
+  )
+  cat("\nWrote Combined_AGR_RGR_by_ID.csv\n")
+}
+
+# --------- 6) Plots (hollow shapes; centered titles; italic species suffix) ---
+if (!is.na(agr_col)) {
+  p_agr <- plot_box(
+    df = AGR, value_col = agr_col, treat_col = treat_group_col, species_col = species_col,
+    title = "Absolute Growth Rate (AGR) by Treatment", ylab = "AGR (units)"
+  ) +
+    scale_color_manual(values = color_vals, limits = names(color_vals), drop = FALSE, name = "Treatment") +
+    scale_shape_manual(values = shape_vals, limits = names(shape_vals), drop = FALSE, name = "Treatment") +
+    theme(plot.title = element_text(hjust = 0.5))
+  print(p_agr)
+}
+
+if (!is.na(rgr_col)) {
+  p_rgr <- plot_box(
+    df = RGR, value_col = rgr_col, treat_col = treat_group_col, species_col = species_col,
+    title = "Relative Growth Rate (RGR) by Treatment", ylab = "RGR (per interval)"
+  ) +
+    scale_color_manual(values = color_vals, limits = names(color_vals), drop = FALSE, name = "Treatment") +
+    scale_shape_manual(values = shape_vals, limits = names(shape_vals), drop = FALSE, name = "Treatment") +
+    theme(plot.title = element_text(hjust = 0.5))
+  print(p_rgr)
+}
+
+# --------- 7) Tables (optional pretty print) ---------------------------------
+if (nrow(AGR_sum)) {
+  AGR_sum %>% arrange(dplyr::across(all_of(group_vars))) %>% print(n = 20)
+}
+if (nrow(RGR_sum)) {
+  RGR_sum %>% arrange(dplyr::across(all_of(group_vars))) %>% print(n = 20)
+}
+```
+
+
+```{r}
+library(emmeans)
+## LARA
+fit_agr_L <- lm(agr ~ treatment_name, data = subset(AGR, Species == "LARA"))
+anova(fit_agr_L)
+emmeans(fit_agr_L, ~ treatment_name) |> pairs(adjust = "tukey")
+
+fit_rgr_L <- lm(rgr ~ treatment_name, data = subset(RGR, Species == "LARA"))
+anova(fit_rgr_L)
+emmeans(fit_rgr_L, ~ treatment_name) |> pairs(adjust = "tukey")
+
+## RHMA
+fit_agr_R <- lm(agr ~ treatment_name, data = subset(AGR, Species == "RHMA"))
+anova(fit_agr_R)
+emmeans(fit_agr_R, ~ treatment_name) |> pairs(adjust = "tukey")
+
+fit_rgr_R <- lm(rgr ~ treatment_name, data = subset(RGR, Species == "RHMA"))
+anova(fit_rgr_R)
+emmeans(fit_rgr_R, ~ treatment_name) |> pairs(adjust = "tukey")
+
+```
+
+Report EMMeans with 95% CIs and compact letter displays (CLDs) on your plots.
+```{r}
+library(emmeans); library(multcomp); library(multcompView)
+# LARA AGR letters
+emm_L_AGR <- emmeans(fit_agr_L, ~ treatment_name)
+cld_L_AGR <- multcomp::cld(emm_L_AGR, Letters = letters, adjust = "tukey")
+
+# LARA RGR letters
+emm_L_RGR <- emmeans(fit_rgr_L, ~ treatment_name)
+cld_L_RGR <- multcomp::cld(emm_L_RGR, Letters = letters, adjust = "tukey")
+
+# RHMA AGR letters
+emm_R_AGR <- emmeans(fit_agr_R, ~ treatment_name)
+cld_R_AGR <- multcomp::cld(emm_R_AGR, Letters = letters, adjust = "tukey")
+
+# RHMA RGR letters
+emm_R_RGR <- emmeans(fit_rgr_R, ~ treatment_name)
+cld_R_RGR <- multcomp::cld(emm_R_RGR, Letters = letters, adjust = "tukey")
+
+#Include effect sizes alongside p-values:
+library(effectsize)
+eta_squared(fit_agr_L)   # partial eta^2 for LARA AGR
+eta_squared(fit_rgr_L)
+eta_squared(fit_agr_R)
+eta_squared(fit_rgr_R)
+```
+Helper to compute letters + y-positions (per species & treatment)
+```{r}
+library(emmeans)
+library(multcomp)   # for cld()
+library(dplyr)
+library(stringr)
+
+# Build CLD letters positioned just above each group's max, per facet
+build_cld_df <- function(df, value_col, species_col, treat_col, method = "tukey") {
+  d <- df %>%
+    mutate(
+      .val = suppressWarnings(as.numeric(.data[[value_col]])),
+      .sp  = .data[[species_col]],
+      # match the x used in plot_box()
+      .trt_name = if ("treatment_name" %in% names(.)) .data[["treatment_name"]] else .data[[treat_col]]
+    ) %>%
+    filter(is.finite(.val), !is.na(.trt_name), !is.na(.sp))
+
+  # letters per species
+  cld_list <- d %>%
+    group_split(.sp, .keep = TRUE) %>%
+    lapply(function(dd) {
+      fit <- lm(.val ~ .trt_name, data = dd)
+      emm <- emmeans(fit, ~ .trt_name)
+      cld <- multcomp::cld(emm, Letters = letters, adjust = method)
+      tibble(
+        .sp       = unique(dd$.sp),
+        .trt_name = as.character(cld$.trt_name),
+        .group    = str_trim(cld$.group)
+      )
+    })
+
+  cld_df <- bind_rows(cld_list)
+
+  # y positions: a little above each group's observed max, with headroom by facet
+  max_by_group <- d %>% group_by(.sp, .trt_name) %>%
+    summarise(y_max = max(.val, na.rm = TRUE), .groups = "drop")
+  span_by_sp <- d %>% group_by(.sp) %>%
+    summarise(y_rng = diff(range(.val, na.rm = TRUE)),
+              y_max_sp = max(.val, na.rm = TRUE), .groups = "drop")
+
+  cld_df %>%
+    left_join(max_by_group, by = c(".sp", ".trt_name")) %>%
+    left_join(span_by_sp, by = ".sp") %>%
+    mutate(y_pos = y_max + 0.06 * ifelse(y_rng == 0, abs(y_max_sp), y_rng))
+}
+
+```
+
+Compute CLDs for each metric from your existing data
+```{r}
+# Use the columns you already resolved earlier
+sp_col <- species_col              # e.g., "Species"
+trt_col <- treat_group_col         # e.g., "treatment_name"
+agr_val <- agr_col                 # e.g., "agr"
+rgr_val <- rgr_col                 # e.g., "rgr"
+
+cld_agr <- build_cld_df(AGR, value_col = agr_val, species_col = sp_col, treat_col = trt_col)
+cld_rgr <- build_cld_df(RGR, value_col = rgr_val, species_col = sp_col, treat_col = trt_col)
+
+```
+
+Add the letters to your existing plots
+
+(Also add a little y headroom so letters aren’t clipped.)
+```{r}
+# AGR plot with CLD letters
+p_agr <- p_agr +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+  geom_text(
+    data = cld_agr,
+    aes(x = .trt_name, y = y_pos, label = .group),
+    inherit.aes = FALSE,
+    vjust = 0, size = 4
+  ) +
+  coord_cartesian(clip = "off")
+
+print(p_agr)
+
+# RGR plot with CLD letters
+p_rgr <- p_rgr +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+  geom_text(
+    data = cld_rgr,
+    aes(x = .trt_name, y = y_pos, label = .group),
+    inherit.aes = FALSE,
+    vjust = 0, size = 4
+  ) +
+  coord_cartesian(clip = "off")
+
+print(p_rgr)
+```
+
+
+
+
+
 
 ```{r calculate-rgr}
 # Calculate relative growth rate between time periods
