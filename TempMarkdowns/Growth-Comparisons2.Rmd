@@ -950,12 +950,92 @@ rhma_pairs
 library(multcompView)
 
 # Convert to named p-value list
-pvals <- setNames(lara_pairs$P.adj, lara_pairs$Comparison)
+pvals_lara <- setNames(lara_pairs$P.adj, lara_pairs$Comparison)
+pvals_rhma <- setNames(rhma_pairs$P.adj, rhma_pairs$Comparison)
 
 # Generate letters
-letters_lara <- multcompLetters(pvals, threshold = 0.05)
+letters_lara <- multcompLetters(pvals_lara, threshold = 0.05)
 letters_lara$Letters
 
+letters_rhma <- multcompLetters(pvals_rhma, threshold = 0.05)
+letters_rhma$Letters
+
+library(dplyr)
+library(tibble)
+library(multcompView)
+
+
+# 1) Turn the letters into tidy data frames (per species)
+cld_lara <- tibble(
+  Species = "LARA",
+  Treatment_Name = names(letters_lara$Letters),
+  Letter = unname(letters_lara$Letters)
+)
+
+cld_rhma <- tibble(
+  Species = "RHMA",
+  Treatment_Name = names(letters_rhma$Letters),
+  Letter = unname(letters_rhma$Letters)
+)
+
+cld_all <- bind_rows(cld_lara, cld_rhma)
+
+# 2) Compute y-positions (per species & treatment) so letters sit above the boxes
+#    Add a small species-specific offset so letters clear the top whisker nicely.
+y_pos <- height_change_data %>%
+  group_by(Species, Treatment_Name) %>%
+  summarise(y_top = max(Height_Change, na.rm = TRUE), .groups = "drop") %>%
+  group_by(Species) %>%
+  mutate(y = y_top + 0.06 * diff(range(y_top, na.rm = TRUE))) %>%  # 6% of span as padding
+  ungroup() %>%
+  dplyr::select(Species, Treatment_Name, y)
+
+# 3) Merge letters with y-positions
+letters_plot <- cld_all %>%
+  left_join(y_pos, by = c("Species", "Treatment_Name"))
+
+# 4) Your plot (unchanged) + text layer for letters
+p_growth <- ggplot(height_change_data, 
+                   aes(x = Treatment_Name, y = Height_Change, fill = Treatment_Name)) +
+  geom_jitter(aes(color = Treatment_Name), 
+              width = 0.15, alpha = 0.6, size = 2) +
+  geom_boxplot(alpha = 0.3, outlier.shape = NA, width = 0.6) +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 3, color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", alpha = 0.5) +
+  facet_wrap(
+    ~ Species, scales = "free_y",
+    labeller = labeller(
+      Species = c(
+        "RHMA" = expression(italic("Rhizophora mangle")),
+        "LARA" = expression(italic("Laguncularia racemosa"))
+      )
+    )
+  ) +
+  scale_fill_manual(values = color_vals) +
+  scale_color_manual(values = color_vals) +
+  labs(
+    title = "Total Height Growth Difference of Survivors (TP6 - TP0)",
+    subtitle = expression(italic("L. racemosa")*": Growth above substrate | " * italic("R. mangle")*": Epicotyl growth"),
+    x = "Treatment",
+    y = "Height Change (cm)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "none"
+  ) +
+  # <-- add letters here -->
+  geom_text(
+    data = letters_plot,
+    aes(x = Treatment_Name, y = y, label = Letter),
+    inherit.aes = FALSE,
+    fontface = "bold",
+    vjust = 0
+  )
+
+print(p_growth)
 ```
 
 
