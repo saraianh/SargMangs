@@ -235,7 +235,10 @@ latest_survival %>%
   kable(caption = "Final Survival Rates by Treatment and Species",
         col.names = c("Treatment", "Species", "Total", "Alive", "Survival Rate (%)", "SE"),
         digits = 2) %>%
-  kable_styling(bootstrap_options = c("striped", "hover"))
+  kable_styling(bootstrap_options = c("striped", "hover")) 
+
+write.csv(latest_survival,
+          file = "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\latest_survival.csv", row.names = FALSE)
 
 # Bar plot of final survival
 p_final_survival <- latest_survival %>%
