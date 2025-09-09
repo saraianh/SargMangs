@@ -426,7 +426,7 @@ final_heights <- growth_data %>%
          !is.na(Height))
 
 # Build a species-specific "final height" using LARA Height 1 and RHMA epicotyl length
-final_heights <- growth_data %>%
+final_heights <- final_heights %>%
   mutate(
     Height_final = dplyr::case_when(
       Species == "LARA" ~ LARA_Height_Above_Substrate,     # <-- use LARA Height 1 only
@@ -450,7 +450,7 @@ height_summary <- final_heights %>%
 
 height_summary %>%
   arrange(Species, desc(mean_height)) %>%
-  kable(caption = "Final Height Summary by Treatment (Survivors Only)",
+  kable(caption = "Final Height Summary by Treatment of Survivors",
         col.names = c("Treatment", "Species", "N", "Mean", "SD", "SE", 
                      "Median", "Min", "Max"),
         digits = 2) %>%
@@ -459,16 +459,16 @@ height_summary %>%
 # Boxplot of final heights
 p_height_box <- ggplot(final_heights, 
                 aes(x = Treatment_Name, y = Height, fill = Treatment_Name)) +
-  geom_boxplot(alpha = 0.7, outlier.shape = 21, outlier.size = 2) +
   geom_jitter(aes(color = Treatment_Name), 
               width = 0.2, alpha = 0.5, size = 2) +
+  geom_boxplot(alpha = 0.4, outlier.shape = 21, outlier.size = 2) +
   facet_wrap(~ Species, scales = "free_y", labeller = labeller(
              Species = c("RHMA" = expression(italic("Rhizophora mangle")),
                          "LARA" = expression(italic("Laguncularia racemosa")))
            )) +
   scale_fill_manual(values = color_vals) +
   scale_color_manual(values = color_vals) +
-  labs(title = "Final Height Distribution by Treatment",
+  labs(title = "Final Height Distribution of Survivors by Treatment",
        subtitle = expression(italic("Rhizophora mangle")*": Epicotyl Length | " *italic("Laguncularia racemosa")*": Shoot Height Above Substrate"),
        x = "Treatment",
        y = "Height (cm)") +
@@ -483,6 +483,134 @@ p_height_box +
   )
 
 ```
+
+## Growth (Change in Height) Analysis
+```{r height-change-analysis}
+# Calculate height change from TP0 to TP6 for survivors only
+height_change_data <- growth_data %>%
+  filter(Time_Period %in% c("0", "6")) %>%
+  dplyr::select(Species, Prop_ID, Treatment_Name, Time_Period, Height) %>%
+  pivot_wider(names_from = Time_Period, 
+              values_from = Height, 
+              names_prefix = "TP_") %>%
+  filter(!is.na(TP_0) & !is.na(TP_6)) %>%  # Only include plants with both measurements
+  mutate(
+    Height_Change = TP_6 - TP_0,  # Calculate growth
+    Percent_Change = ((TP_6 - TP_0) / TP_0) * 100  # Calculate percent change
+  )
+
+# Summary statistics by treatment and species
+growth_summary <- height_change_data %>%
+  group_by(Treatment_Name, Species) %>%
+  summarise(
+    n = n(),
+    mean_initial = mean(TP_0, na.rm = TRUE),
+    mean_final = mean(TP_6, na.rm = TRUE),
+    mean_growth = mean(Height_Change, na.rm = TRUE),
+    sd_growth = sd(Height_Change, na.rm = TRUE),
+    se_growth = sd_growth / sqrt(n),
+    median_growth = median(Height_Change, na.rm = TRUE),
+    mean_percent_change = mean(Percent_Change, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# Display summary table
+growth_summary %>%
+  arrange(Species, desc(mean_growth)) %>%
+  kable(caption = "Height Growth Summary (TP0 to TP6) for Survivors",
+        col.names = c("Treatment", "Species", "N", "Mean Initial (cm)", 
+                     "Mean Final (cm)", "Mean Growth (cm)", "SD", "SE", 
+                     "Median Growth", "Mean % Change"),
+        digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Create boxplot of height change
+p_growth <- ggplot(height_change_data, 
+                   aes(x = Treatment_Name, y = Height_Change, fill = Treatment_Name)) +
+  geom_boxplot(alpha = 0.3, outlier.shape = NA, width = 0.6) +
+  geom_jitter(aes(color = Treatment_Name), 
+              width = 0.15, alpha = 0.6, size = 2) +
+  # Add mean points
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 3, color = "black") +
+  # Add horizontal line at zero
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", alpha = 0.5) +
+  facet_wrap(~ Species, scales = "free_y", 
+             labeller = labeller(
+               Species = c("RHMA" = expression(italic("Rhizophora mangle")),
+                          "LARA" = expression(italic("Laguncularia racemosa")))
+             )) +
+  scale_fill_manual(values = color_vals) +
+  scale_color_manual(values = color_vals) +
+  labs(title = "Total Height Growth (TP6 - TP0)",
+       subtitle = expression(italic("R. mangle")*": Epicotyl growth | " *
+                           italic("L. racemosa")*": Height growth above substrate"),
+       x = "Treatment",
+       y = "Height Change (cm)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5),
+        legend.position = "none")
+
+print(p_growth)
+
+# Statistical analysis of growth
+# ANOVA for height change
+growth_model <- aov(Height_Change ~ Treatment_Name * Species, data = height_change_data)
+
+cat("ANOVA for Height Change:\n")
+print(summary(growth_model))
+
+# Post-hoc tests
+library(emmeans)
+growth_emmeans <- emmeans(growth_model, ~ Treatment_Name | Species)
+
+cat("\n\nEstimated Marginal Means for Height Change:\n")
+print(summary(growth_emmeans))
+
+cat("\n\nTukey HSD Comparisons:\n")
+print(pairs(growth_emmeans, adjust = "tukey"))
+
+# Create bar plot with error bars showing mean growth
+p_growth_bars <- ggplot(growth_summary, 
+                        aes(x = Treatment_Name, y = mean_growth, fill = Treatment_Name)) +
+  geom_col(alpha = 0.7) +
+  geom_errorbar(aes(ymin = mean_growth - se_growth, 
+                    ymax = mean_growth + se_growth),
+                width = 0.25,
+                size = 0.8) +
+  facet_wrap(~ Species, scales = "free_y",
+             labeller = labeller(
+               Species = c("RHMA" = expression(italic("Rhizophora mangle")),
+                          "LARA" = expression(italic("Laguncularia racemosa")))
+             )) +
+  scale_fill_manual(values = color_vals) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black") +
+  labs(title = "Mean Height Growth by Treatment",
+       subtitle = "Error bars = ±1 SE",
+       x = "Treatment",
+       y = "Mean Height Change (cm)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5),
+        legend.position = "none")
+
+print(p_growth_bars)
+
+# Ranking by growth
+growth_ranks <- growth_summary %>%
+  group_by(Species) %>%
+  arrange(desc(mean_growth)) %>%
+  mutate(rank = row_number()) %>%
+  select(Species, Treatment_Name, mean_growth, rank)
+
+cat("\n\nTreatment Rankings by Growth:\n")
+print(growth_ranks)
+```
+
+
+
 
 # Relative Growth Rate Analysis
 
@@ -847,112 +975,12 @@ print(p_rgr)
 ```
 
 
-
-
-
-
-```{r calculate-rgr}
-# Calculate relative growth rate between time periods
-# RGR = (ln(Height_t2) - ln(Height_t1)) / (t2 - t1)
-rgr_data <- growth_data %>%
-  filter(!is.na(Height), Height > 0) %>%
-  arrange(Species, Prop_ID, Time_Period) %>%
-  group_by(Species, Prop_ID) %>%
-  mutate(
-    ln_height = log(Height),
-    time_num = as.numeric(as.character(Time_Period)),
-    rgr = (ln_height - lag(ln_height)) / (time_num - lag(time_num))
-  ) %>%
-  filter(!is.na(rgr)) %>%
-  ungroup()
-
-# Summary of RGR by treatment
-rgr_summary <- rgr_data %>%
-  group_by(Treatment_Name, Species) %>%
-  summarise(
-    n = n(),
-    mean_rgr = mean(rgr, na.rm = TRUE),
-    sd_rgr = sd(rgr, na.rm = TRUE),
-    se_rgr = sd_rgr / sqrt(n),
-    median_rgr = median(rgr, na.rm = TRUE)
-  ) %>%
-  ungroup()
-
-rgr_summary %>%
-  arrange(Species, desc(mean_rgr)) %>%
-  kable(caption = "Relative Growth Rate by Treatment",
-        col.names = c("Treatment", "Species", "N", "Mean RGR", "SD", "SE", "Median RGR"),
-        digits = 4) %>%
-  kable_styling(bootstrap_options = c("striped", "hover"))
-
-# Plot RGR
-p_rgr <- ggplot(rgr_summary, 
-                aes(x = Treatment_Name, y = mean_rgr, fill = Treatment_Name)) +
-  geom_col(alpha = 0.8) +
-  geom_errorbar(aes(ymin = mean_rgr - se_rgr, ymax = mean_rgr + se_rgr),
-                width = 0.25) +
-  facet_wrap(~ Species, scales = "free_y",
-             labeller = labeller(Species = c("LARA" = "White Mangrove", 
-                                            "RHMA" = "Red Mangrove"))) +
-  scale_fill_manual(values = color_vals) +
-  labs(title = "Mean Relative Growth Rate by Treatment",
-       x = "Treatment",
-       y = "Relative Growth Rate (per time period)",
-       fill = "Treatment") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "none")
-
-print(p_rgr)
-```
-
-## RGR Over Time
-
-```{r rgr-time}
-# Calculate RGR for each time interval
-rgr_time <- rgr_data %>%
-  group_by(Time_Period, Treatment_Name, Species) %>%
-  summarise(
-    n = n(),
-    mean_rgr = mean(rgr, na.rm = TRUE),
-    se_rgr = sd(rgr, na.rm = TRUE) / sqrt(n)
-  ) %>%
-  ungroup()
-
-p_rgr_time <- ggplot(rgr_time,
-                     aes(x = as.numeric(as.character(Time_Period)),
-                         y = mean_rgr,
-                         color = Treatment_Name,
-                         shape = Treatment_Name)) +
-  geom_line(size = 1) +
-  geom_point(size = 3) +
-  geom_errorbar(aes(ymin = mean_rgr - se_rgr,
-                    ymax = mean_rgr + se_rgr),
-                width = 0.1) +
-  facet_wrap(~ Species,
-             labeller = labeller(Species = c("LARA" = "White Mangrove", 
-                                            "RHMA" = "Red Mangrove"))) +
-  scale_color_manual(values = color_vals) +
-  scale_shape_manual(values = shape_vals) +
-  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
-  labs(title = "Relative Growth Rate Over Time",
-       x = "Time Period",
-       y = "RGR (per time period)",
-       color = "Treatment",
-       shape = "Treatment") +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-print(p_rgr_time)
-```
-
 # Branching Analysis
 
 ```{r branching-analysis}
 # Analyze branching at final time period
 branch_data <- growth_data %>%
-  filter(Time_Period == max(Time_Period), 
-         !is.na(Number_Branches_num))
+  filter((Time_Period == "6"),!is.na(Number_Branches_num))
 
 # Summary statistics
 branch_summary <- branch_data %>%
@@ -1003,7 +1031,7 @@ print(p_branches)
 ```{r node-analysis}
 # Analyze nodes at final time period
 node_data <- growth_data %>%
-  filter(Time_Period == max(Time_Period), 
+  filter((Time_Period == "6"), 
          !is.na(Total_Nodes_num))
 
 # Summary statistics
@@ -1056,7 +1084,7 @@ print(p_nodes)
 ```{r leaf-analysis}
 # Analyze leaves at final time period
 leaf_data <- growth_data %>%
-  filter(Time_Period == max(Time_Period), 
+  filter((Time_Period == "6"), 
          !is.na(Total_Leaves_num))
 
 # Summary statistics
@@ -1133,6 +1161,225 @@ if(nrow(final_heights) > 0) {
   print(pairs(height_emmeans, adjust = "tukey"))
 }
 ```
+
+Assumptions (based on your diagnostic plots)
+
+- QQ plot: heavy right tail → residual non-normality.
+- Scale-Location: upward trend → heteroskedasticity (variance rises with fitted).
+- Leverage/Cook’s: a few moderate points, nothing extreme.
+
+These don’t invalidate the mean comparisons, but p-values/SEs can be optimistic.
+
+The way to try and fix it is to log transform the Height measurements.
+```{r}
+final_heights2 <- final_heights |> dplyr::mutate(Hlog = log1p(Height))
+m_log <- lm(Hlog ~ Treatment_Name * Species, data = final_heights2)
+plot(m_log)  # should look straighter & flatter
+emmeans(m_log, ~ Treatment_Name | Species) |> pairs(adjust="tukey")
+
+```
+
+```{r}
+# build letters (reuse helper from earlier CLD code; here’s a minimal inline version)
+library(emmeans); library(multcomp); library(dplyr); library(stringr)
+
+build_cld_df <- function(df) {
+  split(df, df$Species) |>
+    lapply(function(dd){
+      fit <- lm(Height ~ Treatment_Name, data = dd)
+      cld <- multcomp::cld(emmeans(fit, ~ Treatment_Name), Letters = letters, adjust = "tukey")
+      tibble(Species = unique(dd$Species),
+             Treatment_Name = as.character(cld$Treatment_Name),
+             .group = str_trim(cld$.group))
+    }) |>
+    bind_rows() |>
+    left_join(df |>
+                group_by(Species, Treatment_Name) |>
+                summarise(y_pos = max(Height, na.rm = TRUE), .groups="drop"),
+              by = c("Species","Treatment_Name")) |>
+    group_by(Species) |>
+    mutate(y_pos = y_pos + 0.06 * diff(range(y_pos, na.rm = TRUE))) |>
+    ungroup()
+}
+
+cld_h <- build_cld_df(final_heights2)
+
+p_height_box <- p_height_box +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+  geom_text(data = cld_h,
+            aes(x = Treatment_Name, y = y_pos, label = .group),
+            inherit.aes = FALSE, vjust = 0, size = 4) +
+  coord_cartesian(clip = "off")
+
+print(p_height_box)
+
+```
+
+Created a new version of the plot above with improved visuals. 
+```{r final-height}
+# Analyze final heights (Time Period 6)
+final_heights <- growth_data %>%
+  filter(Time_Period == "6", 
+         !is.na(Height))
+
+# Summary statistics
+height_summary <- final_heights %>%
+  group_by(Treatment_Name, Species) %>%
+  summarise(
+    n = n(),
+    mean_height = mean(Height, na.rm = TRUE),
+    sd_height = sd(Height, na.rm = TRUE),
+    se_height = sd_height / sqrt(n),
+    median_height = median(Height, na.rm = TRUE),
+    min_height = min(Height, na.rm = TRUE),
+    max_height = max(Height, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+height_summary %>%
+  arrange(Species, desc(mean_height)) %>%
+  kable(caption = "Final Height Summary by Treatment (Survivors Only)",
+        col.names = c("Treatment", "Species", "N", "Mean", "SD", "SE", 
+                     "Median", "Min", "Max"),
+        digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Calculate point sizes based on frequency at similar heights
+# Round heights to nearest 0.5 cm for grouping
+point_data <- final_heights %>%
+  mutate(Height_rounded = round(Height * 2) / 2) %>%  # Round to nearest 0.5
+  group_by(Species, Treatment_Name, Height_rounded) %>%
+  summarise(
+    count = n(),
+    Height = mean(Height)  # Use actual mean for plotting
+  ) %>%
+  ungroup()
+
+# Build CLD (Compact Letter Display) for statistical comparisons
+library(emmeans)
+library(multcomp)
+library(stringr)
+
+build_cld_df <- function(df) {
+  split(df, df$Species) |>
+    lapply(function(dd){
+      if(nrow(dd) > 0 && length(unique(dd$Treatment_Name)) > 1) {
+        fit <- lm(Height ~ Treatment_Name, data = dd)
+        cld <- multcomp::cld(emmeans(fit, ~ Treatment_Name), Letters = letters, adjust = "tukey")
+        tibble(Species = unique(dd$Species),
+               Treatment_Name = as.character(cld$Treatment_Name),
+               .group = str_trim(cld$.group))
+      } else {
+        NULL
+      }
+    }) |>
+    bind_rows() |>
+    left_join(df |>
+                group_by(Species, Treatment_Name) |>
+                summarise(y_pos = max(Height, na.rm = TRUE), .groups="drop"),
+              by = c("Species","Treatment_Name")) |>
+    group_by(Species) |>
+    mutate(y_pos = y_pos + 0.06 * diff(range(y_pos, na.rm = TRUE))) |>
+    ungroup()
+}
+
+cld_h <- build_cld_df(final_heights)
+
+# Calculate error bars data - USING STANDARD DEVIATION
+errorbar_data <- final_heights %>%
+  group_by(Species, Treatment_Name) %>%
+  summarise(
+    mean = mean(Height, na.rm = TRUE),
+    sd = sd(Height, na.rm = TRUE),  # Using SD instead of SE
+    ymin = mean - sd,  # Mean minus SD
+    ymax = mean + sd   # Mean plus SD
+  ) %>%
+  ungroup()
+
+# Create enhanced boxplot with your formatting
+p_height_box <- ggplot(final_heights, 
+                       aes(x = Treatment_Name, y = Height, fill = Treatment_Name)) +
+  # Boxplot layer (more transparent as requested)
+  geom_boxplot(alpha = 0.3, outlier.shape = NA, width = 0.6) +
+  # Add points with size based on frequency
+  geom_point(data = point_data,
+             aes(size = count, color = Treatment_Name),
+             alpha = 0.6,
+             position = position_jitterdodge(jitter.width = 0.15, 
+                                            dodge.width = 0.6)) +
+  # Error bars on top (in front) - black for visibility
+  geom_errorbar(data = errorbar_data,
+                aes(y = mean, ymin = ymin, ymax = ymax),
+                width = 0.2,
+                size = 0.8,
+                color = "black") +
+  # Add mean points as diamonds
+  geom_point(data = errorbar_data,
+             aes(y = mean),
+             shape = 18,  # Diamond shape for means
+             size = 3,
+             color = "black") +
+  # Facets with italic species names
+  facet_wrap(~ Species, scales = "free_y", 
+             labeller = labeller(
+               Species = c("RHMA" = expression(italic("Rhizophora mangle")),
+                          "LARA" = expression(italic("Laguncularia racemosa")))
+             )) +
+  # Scales
+  scale_fill_manual(values = color_vals) +
+  scale_color_manual(values = color_vals) +
+  scale_size_continuous(name = "Count",
+                       range = c(1, 6),  # Size range for points
+                       breaks = c(1, 3, 5, 7),
+                       guide = guide_legend(override.aes = list(alpha = 1))) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+  # Labels with italics
+  labs(title = "Final Height Distribution by Treatment",
+       subtitle = expression(italic("Rhizophora mangle")*": Epicotyl Length | " *
+                           italic("Laguncularia racemosa")*": Height 1"),
+       x = "Treatment",
+       y = "Height (cm)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5),    # center title
+        plot.subtitle = element_text(hjust = 0.5), # center subtitle
+        legend.position = "right",
+        legend.box = "vertical") +
+  guides(fill = "none",  # Hide fill legend (redundant with color)
+         color = guide_legend(order = 1, title = "Treatment"),
+         size = guide_legend(order = 2, title = "Count"))
+
+# Add CLD letters
+p_height_box <- p_height_box +
+  geom_text(data = cld_h,
+            aes(x = Treatment_Name, y = y_pos, label = .group),
+            inherit.aes = FALSE,
+            vjust = 0, 
+            size = 4) +
+  coord_cartesian(clip = "off")  # Allow CLD letters to appear outside plot area
+
+print(p_height_box)
+
+# Statistical summary with groups
+stat_summary <- final_heights %>%
+  group_by(Species, Treatment_Name) %>%
+  summarise(
+    n = n(),
+    mean = mean(Height, na.rm = TRUE),
+    se = sd(Height, na.rm = TRUE) / sqrt(n())
+  ) %>%
+  left_join(cld_h %>% dplyr::select(Species, Treatment_Name, .group), 
+            by = c("Species", "Treatment_Name")) %>%
+  arrange(Species, desc(mean))
+
+stat_summary %>%
+  kable(caption = "Statistical Summary with Tukey HSD Groups",
+        col.names = c("Species", "Treatment", "N", "Mean Height", "SD", "Group"),
+        digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
 
 ## RGR Analysis
 
