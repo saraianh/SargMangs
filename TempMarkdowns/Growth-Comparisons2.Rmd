@@ -484,8 +484,232 @@ p_height_box +
 
 ```
 
+## Assumptions Testing for Height Data
+```{r assumptions-testing}
+# Load required libraries
+library(car)
+library(nortest)
+
+# 1. FINAL HEIGHT DATA (TP6)
+cat(strrep("=", 60), "\n")
+cat("ASSUMPTIONS TESTING FOR FINAL HEIGHT DATA (TP6)\n")
+cat(strrep("=", 60), "\n\n")
+
+# Prepare final height data
+final_heights_test <- growth_data %>%
+  filter(Time_Period == "6", !is.na(Height))
+
+# A. Test Normality by Group
+cat("1. NORMALITY TESTS BY TREATMENT AND SPECIES\n")
+cat(strrep("-",40), "\n\n")
+
+# Shapiro-Wilk test for each group
+normality_results <- final_heights_test %>%
+  group_by(Species, Treatment_Name) %>%
+  summarise(
+    n = n(),
+    W_statistic = ifelse(n >= 3 & n <= 5000, 
+                         shapiro.test(Height)$statistic, NA),
+    p_value = ifelse(n >= 3 & n <= 5000, 
+                    shapiro.test(Height)$p.value, NA),
+    normal = ifelse(n >= 3 & n <= 5000,
+                   ifelse(shapiro.test(Height)$p.value > 0.05, "Yes", "No"),
+                   "Too few/many obs")
+  ) %>%
+  ungroup()
+
+normality_results %>%
+  kable(caption = "Shapiro-Wilk Normality Test by Group (α = 0.05)",
+        col.names = c("Species", "Treatment", "N", "W", "p-value", "Normal?"),
+        digits = 4) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# B. Q-Q Plots for visual assessment
+par(mfrow = c(2, 5))  # Adjust based on number of treatments
+for(sp in unique(final_heights_test$Species)) {
+  for(trt in unique(final_heights_test$Treatment_Name)) {
+    data_subset <- final_heights_test %>%
+      filter(Species == sp, Treatment_Name == trt) %>%
+      pull(Height)
+    
+    if(length(data_subset) > 2) {
+      qqnorm(data_subset, 
+             main = paste(sp, "-", substr(trt, 1, 10)),
+             cex.main = 0.8)
+      qqline(data_subset, col = "red")
+    }
+  }
+}
+par(mfrow = c(1, 1))
+
+# C. Test Homogeneity of Variance
+cat("\n\n2. HOMOGENEITY OF VARIANCE TESTS\n")
+cat(strrep("-",40), "\n\n")
+
+# Levene's Test
+levene_model <- lm(Height ~ Treatment_Name * Species, data = final_heights_test)
+levene_result <- leveneTest(Height ~ Treatment_Name * Species, data = final_heights_test)
+
+cat("Levene's Test for Homogeneity of Variance:\n")
+print(levene_result)
+cat("\nInterpretation: p-value", 
+    ifelse(levene_result$`Pr(>F)`[1] > 0.05, "> 0.05 - Equal variances assumed\n",
+           "< 0.05 - Unequal variances detected\n"))
+
+# # Bartlett's Test (more sensitive to non-normality)
+# ##this code did not work
+# bartlett_result <- bartlett.test(Height ~ interaction(Treatment_Name, Species), 
+#                                  data = final_heights_test)
+# cat("\nBartlett's Test for Homogeneity of Variance:\n")
+# print(bartlett_result)
+
+# D. Check residuals from ANOVA model
+height_aov <- aov(Height ~ Treatment_Name * Species, data = final_heights_test)
+
+cat("\n\n3. RESIDUAL DIAGNOSTICS\n")
+cat(strrep("-",40), "\n\n")
+
+
+# Diagnostic plots
+par(mfrow = c(2, 2))
+plot(height_aov)
+par(mfrow = c(1, 1))
+
+# Shapiro-Wilk test on residuals
+residuals_sw <- shapiro.test(residuals(height_aov))
+cat("Shapiro-Wilk test on residuals:\n")
+cat("W =", residuals_sw$statistic, ", p-value =", residuals_sw$p.value, "\n")
+cat("Residuals are", ifelse(residuals_sw$p.value > 0.05, "normally distributed\n", 
+                            "NOT normally distributed\n"))
+
+# 2. HEIGHT CHANGE DATA (Growth from TP0 to TP6)
+cat("\n\n", strrep("=", 60), "\n\n")
+cat("ASSUMPTIONS TESTING FOR HEIGHT CHANGE DATA (TP6 - TP0)\n")
+cat(strrep("-",60), "\n\n")
+
+# Calculate height change if not already done
+height_change_test <- growth_data %>%
+  filter(Time_Period %in% c("0", "6")) %>%
+  dplyr::select(Species, Prop_ID, Treatment_Name, Time_Period, Height) %>%
+  pivot_wider(names_from = Time_Period, 
+              values_from = Height, 
+              names_prefix = "TP_") %>%
+  filter(!is.na(TP_0) & !is.na(TP_6)) %>%
+  mutate(Height_Change = TP_6 - TP_0)
+
+# A. Normality tests for height change
+cat("1. NORMALITY TESTS FOR HEIGHT CHANGE\n")
+cat(strrep("-",40), "\n\n")
+
+change_normality <- height_change_test %>%
+  group_by(Species, Treatment_Name) %>%
+  summarise(
+    n = n(),
+    W_statistic = ifelse(n >= 3 & n <= 5000, 
+                         shapiro.test(Height_Change)$statistic, NA),
+    p_value = ifelse(n >= 3 & n <= 5000, 
+                    shapiro.test(Height_Change)$p.value, NA),
+    normal = ifelse(n >= 3 & n <= 5000,
+                   ifelse(shapiro.test(Height_Change)$p.value > 0.05, "Yes", "No"),
+                   "Too few/many obs")
+  ) %>%
+  ungroup()
+
+change_normality %>%
+  kable(caption = "Shapiro-Wilk Test for Height Change by Group",
+        col.names = c("Species", "Treatment", "N", "W", "p-value", "Normal?"),
+        digits = 4) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# B. Levene's test for height change
+levene_change <- leveneTest(Height_Change ~ Treatment_Name * Species, 
+                            data = height_change_test)
+cat("\n\nLevene's Test for Height Change:\n")
+print(levene_change)
+
+# 3. TRANSFORMATION IF NEEDED
+cat("\n\n", strrep("=", 60), "\n\n")
+cat("DATA TRANSFORMATIONS (if assumptions violated)\n")
+cat("\n\n", strrep("=", 60), "\n\n")
+
+# Check if transformation is needed
+needs_transform <- any(normality_results$normal == "No", na.rm = TRUE) | 
+                  levene_result$`Pr(>F)`[1] < 0.05
+
+if(needs_transform) {
+  cat("Assumptions violated. Trying transformations...\n\n")
+  
+  # Log transformation (for right-skewed data)
+  final_heights_test <- final_heights_test %>%
+    mutate(
+      Height_log = log(Height + 1),  # Add 1 to handle zeros
+      Height_sqrt = sqrt(Height),
+      Height_reciprocal = 1/(Height + 1)
+    )
+  
+  # Test normality after log transformation
+  cat("LOG TRANSFORMATION RESULTS:\n")
+  log_norm <- final_heights_test %>%
+    group_by(Species, Treatment_Name) %>%
+    summarise(
+      n = n(),
+      p_value_original = ifelse(n >= 3, shapiro.test(Height)$p.value, NA),
+      p_value_log = ifelse(n >= 3, shapiro.test(Height_log)$p.value, NA),
+      improved = ifelse(n >= 3, 
+                       p_value_log > p_value_original, 
+                       NA)
+    )
+  
+  print(log_norm)
+  
+  # Alternative: Kruskal-Wallis test (non-parametric)
+  cat("\n\nNON-PARAMETRIC ALTERNATIVE (Kruskal-Wallis Test):\n")
+  kw_test <- kruskal.test(Height ~ interaction(Treatment_Name, Species), 
+                          data = final_heights_test)
+  print(kw_test)
+  
+  if(kw_test$p.value < 0.05) {
+    cat("\nSignificant differences detected. Consider using Dunn's test for post-hoc comparisons.\n")
+  }
+} else {
+  cat("Assumptions are reasonably met. Proceed with parametric ANOVA.\n")
+}
+
+# Summary recommendation
+cat("\n\n", strrep("=",60), "\n")
+cat("RECOMMENDATIONS\n")
+cat(strrep("=",60), "\n\n")
+
+total_groups <- nrow(normality_results)
+normal_groups <- sum(normality_results$normal == "Yes", na.rm = TRUE)
+percent_normal <- (normal_groups/total_groups) * 100
+
+cat("Normality: ", normal_groups, "/", total_groups, 
+    " groups are normal (", round(percent_normal, 1), "%)\n", sep = "")
+cat("Homogeneity: Levene's test p =", round(levene_result$`Pr(>F)`[1], 4), "\n\n")
+
+if(percent_normal > 80 & levene_result$`Pr(>F)`[1] > 0.05) {
+  cat("✓ Proceed with parametric ANOVA\n")
+  cat("  - Most groups show normality\n")
+  cat("  - Variances are homogeneous\n")
+} else if(percent_normal > 50) {
+  cat("⚠ Consider robust ANOVA or transformation\n")
+  cat("  - ANOVA is fairly robust to minor violations\n")
+  cat("  - Consider Welch's ANOVA if variances are unequal\n")
+} else {
+  cat("✗ Use non-parametric tests\n")
+  cat("  - Kruskal-Wallis test recommended\n")
+  cat("  - Follow with Dunn's test for pairwise comparisons\n")
+}
+```
+
+Height change data does not meet normality or homogeneity of variances even after log transformations. It also has uneven group sizes since not many LARA survived in the end. I will instead run a non-parametric Kruskal Wallis test on each species and follow it up by Dunns test.
+
+The original Growth (Change in Height) Analysis is not to be used; code chunk: height-change-analysis-bad. The height-change-plots code chunk is fine though.
+
+
 ## Growth (Change in Height) Analysis
-```{r height-change-analysis}
+```{r height-change-plots}
 # Calculate height change from TP0 to TP6 for survivors only
 height_change_data <- growth_data %>%
   filter(Time_Period %in% c("0", "6")) %>%
@@ -527,9 +751,9 @@ growth_summary %>%
 # Create boxplot of height change
 p_growth <- ggplot(height_change_data, 
                    aes(x = Treatment_Name, y = Height_Change, fill = Treatment_Name)) +
-  geom_boxplot(alpha = 0.3, outlier.shape = NA, width = 0.6) +
   geom_jitter(aes(color = Treatment_Name), 
               width = 0.15, alpha = 0.6, size = 2) +
+  geom_boxplot(alpha = 0.3, outlier.shape = NA, width = 0.6) +
   # Add mean points
   stat_summary(fun = mean, geom = "point", shape = 18, size = 3, color = "black") +
   # Add horizontal line at zero
@@ -541,9 +765,9 @@ p_growth <- ggplot(height_change_data,
              )) +
   scale_fill_manual(values = color_vals) +
   scale_color_manual(values = color_vals) +
-  labs(title = "Total Height Growth (TP6 - TP0)",
-       subtitle = expression(italic("R. mangle")*": Epicotyl growth | " *
-                           italic("L. racemosa")*": Height growth above substrate"),
+  labs(title = "Total Height Growth Difference of Survivors (TP6 - TP0)",
+       subtitle = expression(italic("L. racemosa")*": Growth above substrate | " * 
+                               italic("R. mangle")*": Epicotyl growth"),
        x = "Treatment",
        y = "Height Change (cm)") +
   theme_minimal() +
@@ -553,23 +777,6 @@ p_growth <- ggplot(height_change_data,
         legend.position = "none")
 
 print(p_growth)
-
-# Statistical analysis of growth
-# ANOVA for height change
-growth_model <- aov(Height_Change ~ Treatment_Name * Species, data = height_change_data)
-
-cat("ANOVA for Height Change:\n")
-print(summary(growth_model))
-
-# Post-hoc tests
-library(emmeans)
-growth_emmeans <- emmeans(growth_model, ~ Treatment_Name | Species)
-
-cat("\n\nEstimated Marginal Means for Height Change:\n")
-print(summary(growth_emmeans))
-
-cat("\n\nTukey HSD Comparisons:\n")
-print(pairs(growth_emmeans, adjust = "tukey"))
 
 # Create bar plot with error bars showing mean growth
 p_growth_bars <- ggplot(growth_summary, 
@@ -587,7 +794,7 @@ p_growth_bars <- ggplot(growth_summary,
   scale_fill_manual(values = color_vals) +
   geom_hline(yintercept = 0, linetype = "solid", color = "black") +
   labs(title = "Mean Height Growth by Treatment",
-       subtitle = "Error bars = ±1 SE",
+       subtitle = "Error bars = ± SE",
        x = "Treatment",
        y = "Mean Height Change (cm)") +
   theme_minimal() +
@@ -603,12 +810,153 @@ growth_ranks <- growth_summary %>%
   group_by(Species) %>%
   arrange(desc(mean_growth)) %>%
   mutate(rank = row_number()) %>%
-  select(Species, Treatment_Name, mean_growth, rank)
+  dplyr::select(Species, Treatment_Name, mean_growth, rank)
 
 cat("\n\nTreatment Rankings by Growth:\n")
 print(growth_ranks)
+#I like this piece of code. It helps me answer my hypotheses directly.
 ```
 
+DO NOT USE. ASSUMPTIONS VIOLATED.
+```{r height-change-analysis-bad}
+# Statistical analysis of growth
+# ANOVA for height change
+growth_model <- aov(Height_Change ~ Treatment_Name * Species, data = height_change_data)
+
+cat("ANOVA for Height Change:\n")
+print(summary(growth_model))
+
+# Post-hoc tests
+library(emmeans)
+growth_emmeans <- emmeans(growth_model, ~ Treatment_Name | Species)
+
+cat("\n\nEstimated Marginal Means for Height Change:\n")
+print(summary(growth_emmeans))
+
+cat("\n\nTukey HSD Comparisons:\n")
+print(pairs(growth_emmeans, adjust = "tukey"))
+
+```
+
+Height Change Analysis Updated
+```{r height-change-analysis-updated}
+library(dplyr)
+
+# Calculate height change from TP0 to TP6 for survivors only
+height_change_data <- growth_data %>%
+  filter(Time_Period %in% c("0", "6")) %>%
+  dplyr::select(Species, Prop_ID, Treatment_Name, Time_Period, Height) %>%
+  pivot_wider(names_from = Time_Period, 
+              values_from = Height, 
+              names_prefix = "TP_") %>%
+  filter(!is.na(TP_0) & !is.na(TP_6)) %>%  # Only include plants with both measurements
+  mutate(
+    Height_Change = TP_6 - TP_0,  # Calculate growth
+    Percent_Change = ((TP_6 - TP_0) / TP_0) * 100  # Calculate percent change
+  )
+
+# Summary statistics by treatment and species
+growth_summary <- height_change_data %>%
+  group_by(Treatment_Name, Species) %>%
+  summarise(
+    n = n(),
+    mean_initial = mean(TP_0, na.rm = TRUE),
+    mean_final = mean(TP_6, na.rm = TRUE),
+    mean_growth = mean(Height_Change, na.rm = TRUE),
+    sd_growth = sd(Height_Change, na.rm = TRUE),
+    se_growth = sd_growth / sqrt(n),
+    median_growth = median(Height_Change, na.rm = TRUE),
+    mean_percent_change = mean(Percent_Change, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# Display summary table
+growth_summary %>%
+  arrange(Species, desc(mean_growth)) %>%
+  kable(caption = "Height Growth Summary (TP0 to TP6) for Survivors",
+        col.names = c("Treatment", "Species", "N", "Mean Initial (cm)", 
+                     "Mean Final (cm)", "Mean Growth (cm)", "SD", "SE", 
+                     "Median Growth", "Mean % Change"),
+        digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Create boxplot of height change
+p_growth <- ggplot(height_change_data, 
+                   aes(x = Treatment_Name, y = Height_Change, fill = Treatment_Name)) +
+  geom_jitter(aes(color = Treatment_Name), 
+              width = 0.15, alpha = 0.6, size = 2) +
+  geom_boxplot(alpha = 0.3, outlier.shape = NA, width = 0.6) +
+  # Add mean points
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 3, color = "black") +
+  # Add horizontal line at zero
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", alpha = 0.5) +
+  facet_wrap(~ Species, scales = "free_y", 
+             labeller = labeller(
+               Species = c("RHMA" = expression(italic("Rhizophora mangle")),
+                          "LARA" = expression(italic("Laguncularia racemosa")))
+             )) +
+  scale_fill_manual(values = color_vals) +
+  scale_color_manual(values = color_vals) +
+  labs(title = "Mean Total Height Growth of Survivors (TP6 - TP0)",
+       subtitle = expression(italic("R. mangle")*": Epicotyl growth | " *
+                           italic("L. racemosa")*": Growth above substrate"),
+       x = "Treatment",
+       y = "Mean Height Change (cm)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5),
+        legend.position = "none")
+
+print(p_growth)
+
+##Analysis time
+# Split by species
+lara_data <- height_change_data %>% filter(Species == "LARA")
+rhma_data <- height_change_data %>% filter(Species == "RHMA")
+
+# Kruskal–Wallis for LARA
+kruskal_lara <- kruskal.test(Height_Change ~ Treatment_Name, data = lara_data)
+kruskal_lara
+
+# Kruskal–Wallis for RHMA
+kruskal_rhma <- kruskal.test(Height_Change ~ Treatment_Name, data = rhma_data)
+kruskal_rhma
+
+#Dunns post-hoc test (with bonferroni corrections)
+library(FSA)   # for dunnTest
+
+# LARA pairwise comparisons
+dunn_lara <- dunnTest(Height_Change ~ Treatment_Name, data = lara_data,
+                      method = "bonferroni")
+dunn_lara
+
+# RHMA pairwise comparisons
+dunn_rhma <- dunnTest(Height_Change ~ Treatment_Name, data = rhma_data,
+                      method = "bonferroni")
+dunn_rhma
+
+#Cleaner output with adjusted p-values
+lara_pairs <- dunn_lara$res %>%
+  dplyr::select(Comparison, Z, P.unadj, P.adj)
+rhma_pairs <- dunn_rhma$res %>%
+  dplyr::select(Comparison, Z, P.unadj, P.adj)
+
+lara_pairs
+rhma_pairs
+#these appear to return the same thing as the dunn_rhma and the dunn_lara but are needed for the next part of the code
+
+#Make a plot with significant letters
+library(multcompView)
+
+# Convert to named p-value list
+pvals <- setNames(lara_pairs$P.adj, lara_pairs$Comparison)
+
+# Generate letters
+letters_lara <- multcompLetters(pvals, threshold = 0.05)
+letters_lara$Letters
+
+```
 
 
 
@@ -1134,7 +1482,7 @@ print(p_leaves)
 # Statistical Analysis
 
 ## Height Analysis
-
+probably cant use these since it violates the assumptions of an ANOVA
 ```{r height-stats}
 # ANOVA for final heights
 if(nrow(final_heights) > 0) {
@@ -1215,169 +1563,170 @@ print(p_height_box)
 
 ```
 
-Created a new version of the plot above with improved visuals. 
-```{r final-height}
-# Analyze final heights (Time Period 6)
-final_heights <- growth_data %>%
-  filter(Time_Period == "6", 
-         !is.na(Height))
+This entire section needs some work. It's just for visulaization mostly.
+<!-- Created a new version of the plot above with improved visuals.  -->
+<!-- ```{r final-height} -->
+<!-- # Analyze final heights (Time Period 6) -->
+<!-- final_heights <- growth_data %>% -->
+<!--   filter(Time_Period == "6",  -->
+<!--          !is.na(Height)) -->
 
-# Summary statistics
-height_summary <- final_heights %>%
-  group_by(Treatment_Name, Species) %>%
-  summarise(
-    n = n(),
-    mean_height = mean(Height, na.rm = TRUE),
-    sd_height = sd(Height, na.rm = TRUE),
-    se_height = sd_height / sqrt(n),
-    median_height = median(Height, na.rm = TRUE),
-    min_height = min(Height, na.rm = TRUE),
-    max_height = max(Height, na.rm = TRUE)
-  ) %>%
-  ungroup()
+<!-- # Summary statistics -->
+<!-- height_summary <- final_heights %>% -->
+<!--   group_by(Treatment_Name, Species) %>% -->
+<!--   summarise( -->
+<!--     n = n(), -->
+<!--     mean_height = mean(Height, na.rm = TRUE), -->
+<!--     sd_height = sd(Height, na.rm = TRUE), -->
+<!--     se_height = sd_height / sqrt(n), -->
+<!--     median_height = median(Height, na.rm = TRUE), -->
+<!--     min_height = min(Height, na.rm = TRUE), -->
+<!--     max_height = max(Height, na.rm = TRUE) -->
+<!--   ) %>% -->
+<!--   ungroup() -->
 
-height_summary %>%
-  arrange(Species, desc(mean_height)) %>%
-  kable(caption = "Final Height Summary by Treatment (Survivors Only)",
-        col.names = c("Treatment", "Species", "N", "Mean", "SD", "SE", 
-                     "Median", "Min", "Max"),
-        digits = 2) %>%
-  kable_styling(bootstrap_options = c("striped", "hover"))
+<!-- height_summary %>% -->
+<!--   arrange(Species, desc(mean_height)) %>% -->
+<!--   kable(caption = "Final Height Summary by Treatment (Survivors Only)", -->
+<!--         col.names = c("Treatment", "Species", "N", "Mean", "SD", "SE",  -->
+<!--                      "Median", "Min", "Max"), -->
+<!--         digits = 2) %>% -->
+<!--   kable_styling(bootstrap_options = c("striped", "hover")) -->
 
-# Calculate point sizes based on frequency at similar heights
-# Round heights to nearest 0.5 cm for grouping
-point_data <- final_heights %>%
-  mutate(Height_rounded = round(Height * 2) / 2) %>%  # Round to nearest 0.5
-  group_by(Species, Treatment_Name, Height_rounded) %>%
-  summarise(
-    count = n(),
-    Height = mean(Height)  # Use actual mean for plotting
-  ) %>%
-  ungroup()
+<!-- # Calculate point sizes based on frequency at similar heights -->
+<!-- # Round heights to nearest 0.5 cm for grouping -->
+<!-- point_data <- final_heights %>% -->
+<!--   mutate(Height_rounded = round(Height * 2) / 2) %>%  # Round to nearest 0.5 -->
+<!--   group_by(Species, Treatment_Name, Height_rounded) %>% -->
+<!--   summarise( -->
+<!--     count = n(), -->
+<!--     Height = mean(Height)  # Use actual mean for plotting -->
+<!--   ) %>% -->
+<!--   ungroup() -->
 
-# Build CLD (Compact Letter Display) for statistical comparisons
-library(emmeans)
-library(multcomp)
-library(stringr)
+<!-- # Build CLD (Compact Letter Display) for statistical comparisons -->
+<!-- library(emmeans) -->
+<!-- library(multcomp) -->
+<!-- library(stringr) -->
 
-build_cld_df <- function(df) {
-  split(df, df$Species) |>
-    lapply(function(dd){
-      if(nrow(dd) > 0 && length(unique(dd$Treatment_Name)) > 1) {
-        fit <- lm(Height ~ Treatment_Name, data = dd)
-        cld <- multcomp::cld(emmeans(fit, ~ Treatment_Name), Letters = letters, adjust = "tukey")
-        tibble(Species = unique(dd$Species),
-               Treatment_Name = as.character(cld$Treatment_Name),
-               .group = str_trim(cld$.group))
-      } else {
-        NULL
-      }
-    }) |>
-    bind_rows() |>
-    left_join(df |>
-                group_by(Species, Treatment_Name) |>
-                summarise(y_pos = max(Height, na.rm = TRUE), .groups="drop"),
-              by = c("Species","Treatment_Name")) |>
-    group_by(Species) |>
-    mutate(y_pos = y_pos + 0.06 * diff(range(y_pos, na.rm = TRUE))) |>
-    ungroup()
-}
+<!-- build_cld_df <- function(df) { -->
+<!--   split(df, df$Species) |> -->
+<!--     lapply(function(dd){ -->
+<!--       if(nrow(dd) > 0 && length(unique(dd$Treatment_Name)) > 1) { -->
+<!--         fit <- lm(Height ~ Treatment_Name, data = dd) -->
+<!--         cld <- multcomp::cld(emmeans(fit, ~ Treatment_Name), Letters = letters, adjust = "tukey") -->
+<!--         tibble(Species = unique(dd$Species), -->
+<!--                Treatment_Name = as.character(cld$Treatment_Name), -->
+<!--                .group = str_trim(cld$.group)) -->
+<!--       } else { -->
+<!--         NULL -->
+<!--       } -->
+<!--     }) |> -->
+<!--     bind_rows() |> -->
+<!--     left_join(df |> -->
+<!--                 group_by(Species, Treatment_Name) |> -->
+<!--                 summarise(y_pos = max(Height, na.rm = TRUE), .groups="drop"), -->
+<!--               by = c("Species","Treatment_Name")) |> -->
+<!--     group_by(Species) |> -->
+<!--     mutate(y_pos = y_pos + 0.06 * diff(range(y_pos, na.rm = TRUE))) |> -->
+<!--     ungroup() -->
+<!-- } -->
 
-cld_h <- build_cld_df(final_heights)
+<!-- cld_h <- build_cld_df(final_heights) -->
 
-# Calculate error bars data - USING STANDARD DEVIATION
-errorbar_data <- final_heights %>%
-  group_by(Species, Treatment_Name) %>%
-  summarise(
-    mean = mean(Height, na.rm = TRUE),
-    sd = sd(Height, na.rm = TRUE),  # Using SD instead of SE
-    ymin = mean - sd,  # Mean minus SD
-    ymax = mean + sd   # Mean plus SD
-  ) %>%
-  ungroup()
+<!-- # Calculate error bars data - USING STANDARD DEVIATION -->
+<!-- errorbar_data <- final_heights %>% -->
+<!--   group_by(Species, Treatment_Name) %>% -->
+<!--   summarise( -->
+<!--     mean = mean(Height, na.rm = TRUE), -->
+<!--     sd = sd(Height, na.rm = TRUE),  # Using SD instead of SE -->
+<!--     ymin = mean - sd,  # Mean minus SD -->
+<!--     ymax = mean + sd   # Mean plus SD -->
+<!--   ) %>% -->
+<!--   ungroup() -->
 
-# Create enhanced boxplot with your formatting
-p_height_box <- ggplot(final_heights, 
-                       aes(x = Treatment_Name, y = Height, fill = Treatment_Name)) +
-  # Boxplot layer (more transparent as requested)
-  geom_boxplot(alpha = 0.3, outlier.shape = NA, width = 0.6) +
-  # Add points with size based on frequency
-  geom_point(data = point_data,
-             aes(size = count, color = Treatment_Name),
-             alpha = 0.6,
-             position = position_jitterdodge(jitter.width = 0.15, 
-                                            dodge.width = 0.6)) +
-  # Error bars on top (in front) - black for visibility
-  geom_errorbar(data = errorbar_data,
-                aes(y = mean, ymin = ymin, ymax = ymax),
-                width = 0.2,
-                size = 0.8,
-                color = "black") +
-  # Add mean points as diamonds
-  geom_point(data = errorbar_data,
-             aes(y = mean),
-             shape = 18,  # Diamond shape for means
-             size = 3,
-             color = "black") +
-  # Facets with italic species names
-  facet_wrap(~ Species, scales = "free_y", 
-             labeller = labeller(
-               Species = c("RHMA" = expression(italic("Rhizophora mangle")),
-                          "LARA" = expression(italic("Laguncularia racemosa")))
-             )) +
-  # Scales
-  scale_fill_manual(values = color_vals) +
-  scale_color_manual(values = color_vals) +
-  scale_size_continuous(name = "Count",
-                       range = c(1, 6),  # Size range for points
-                       breaks = c(1, 3, 5, 7),
-                       guide = guide_legend(override.aes = list(alpha = 1))) +
-  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
-  # Labels with italics
-  labs(title = "Final Height Distribution by Treatment",
-       subtitle = expression(italic("Rhizophora mangle")*": Epicotyl Length | " *
-                           italic("Laguncularia racemosa")*": Height 1"),
-       x = "Treatment",
-       y = "Height (cm)") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        plot.title = element_text(hjust = 0.5),    # center title
-        plot.subtitle = element_text(hjust = 0.5), # center subtitle
-        legend.position = "right",
-        legend.box = "vertical") +
-  guides(fill = "none",  # Hide fill legend (redundant with color)
-         color = guide_legend(order = 1, title = "Treatment"),
-         size = guide_legend(order = 2, title = "Count"))
+<!-- # Create enhanced boxplot with your formatting -->
+<!-- p_height_box <- ggplot(final_heights,  -->
+<!--                        aes(x = Treatment_Name, y = Height, fill = Treatment_Name)) + -->
+<!--   # Boxplot layer (more transparent as requested) -->
+<!--   geom_boxplot(alpha = 0.3, outlier.shape = NA, width = 0.6) + -->
+<!--   # Add points with size based on frequency -->
+<!--   geom_point(data = point_data, -->
+<!--              aes(size = count, color = Treatment_Name), -->
+<!--              alpha = 0.6, -->
+<!--              position = position_jitterdodge(jitter.width = 0.15,  -->
+<!--                                             dodge.width = 0.6)) + -->
+<!--   # Error bars on top (in front) - black for visibility -->
+<!--   geom_errorbar(data = errorbar_data, -->
+<!--                 aes(y = mean, ymin = ymin, ymax = ymax), -->
+<!--                 width = 0.2, -->
+<!--                 size = 0.8, -->
+<!--                 color = "black") + -->
+<!--   # Add mean points as diamonds -->
+<!--   geom_point(data = errorbar_data, -->
+<!--              aes(y = mean), -->
+<!--              shape = 18,  # Diamond shape for means -->
+<!--              size = 3, -->
+<!--              color = "black") + -->
+<!--   # Facets with italic species names -->
+<!--   facet_wrap(~ Species, scales = "free_y",  -->
+<!--              labeller = labeller( -->
+<!--                Species = c("RHMA" = expression(italic("Rhizophora mangle")), -->
+<!--                           "LARA" = expression(italic("Laguncularia racemosa"))) -->
+<!--              )) + -->
+<!--   # Scales -->
+<!--   scale_fill_manual(values = color_vals) + -->
+<!--   scale_color_manual(values = color_vals) + -->
+<!--   scale_size_continuous(name = "Count", -->
+<!--                        range = c(1, 6),  # Size range for points -->
+<!--                        breaks = c(1, 3, 5, 7), -->
+<!--                        guide = guide_legend(override.aes = list(alpha = 1))) + -->
+<!--   scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) + -->
+<!--   # Labels with italics -->
+<!--   labs(title = "Final Height Distribution by Treatment", -->
+<!--        subtitle = expression(italic("Rhizophora mangle")*": Epicotyl Length | " * -->
+<!--                            italic("Laguncularia racemosa")*": Height 1"), -->
+<!--        x = "Treatment", -->
+<!--        y = "Height (cm)") + -->
+<!--   theme_minimal() + -->
+<!--   theme(axis.text.x = element_text(angle = 45, hjust = 1), -->
+<!--         plot.title = element_text(hjust = 0.5),    # center title -->
+<!--         plot.subtitle = element_text(hjust = 0.5), # center subtitle -->
+<!--         legend.position = "right", -->
+<!--         legend.box = "vertical") + -->
+<!--   guides(fill = "none",  # Hide fill legend (redundant with color) -->
+<!--          color = guide_legend(order = 1, title = "Treatment"), -->
+<!--          size = guide_legend(order = 2, title = "Count")) -->
 
-# Add CLD letters
-p_height_box <- p_height_box +
-  geom_text(data = cld_h,
-            aes(x = Treatment_Name, y = y_pos, label = .group),
-            inherit.aes = FALSE,
-            vjust = 0, 
-            size = 4) +
-  coord_cartesian(clip = "off")  # Allow CLD letters to appear outside plot area
+<!-- # Add CLD letters -->
+<!-- p_height_box <- p_height_box + -->
+<!--   geom_text(data = cld_h, -->
+<!--             aes(x = Treatment_Name, y = y_pos, label = .group), -->
+<!--             inherit.aes = FALSE, -->
+<!--             vjust = 0,  -->
+<!--             size = 4) + -->
+<!--   coord_cartesian(clip = "off")  # Allow CLD letters to appear outside plot area -->
 
-print(p_height_box)
+<!-- print(p_height_box) -->
 
-# Statistical summary with groups
-stat_summary <- final_heights %>%
-  group_by(Species, Treatment_Name) %>%
-  summarise(
-    n = n(),
-    mean = mean(Height, na.rm = TRUE),
-    se = sd(Height, na.rm = TRUE) / sqrt(n())
-  ) %>%
-  left_join(cld_h %>% dplyr::select(Species, Treatment_Name, .group), 
-            by = c("Species", "Treatment_Name")) %>%
-  arrange(Species, desc(mean))
+<!-- # Statistical summary with groups -->
+<!-- stat_summary <- final_heights %>% -->
+<!--   group_by(Species, Treatment_Name) %>% -->
+<!--   summarise( -->
+<!--     n = n(), -->
+<!--     mean = mean(Height, na.rm = TRUE), -->
+<!--     se = sd(Height, na.rm = TRUE) / sqrt(n()) -->
+<!--   ) %>% -->
+<!--   left_join(cld_h %>% dplyr::select(Species, Treatment_Name, .group),  -->
+<!--             by = c("Species", "Treatment_Name")) %>% -->
+<!--   arrange(Species, desc(mean)) -->
 
-stat_summary %>%
-  kable(caption = "Statistical Summary with Tukey HSD Groups",
-        col.names = c("Species", "Treatment", "N", "Mean Height", "SD", "Group"),
-        digits = 2) %>%
-  kable_styling(bootstrap_options = c("striped", "hover"))
-```
+<!-- stat_summary %>% -->
+<!--   kable(caption = "Statistical Summary with Tukey HSD Groups", -->
+<!--         col.names = c("Species", "Treatment", "N", "Mean Height", "SD", "Group"), -->
+<!--         digits = 2) %>% -->
+<!--   kable_styling(bootstrap_options = c("striped", "hover")) -->
+<!-- ``` -->
 
 
 
