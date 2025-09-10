@@ -8,6 +8,9 @@ output:
     toc_float: true
     theme: cerulean
     code_folding: hide
+editor_options: 
+  markdown: 
+    wrap: 72
 ---
 
 ```{r setup, include=FALSE}
@@ -51,25 +54,35 @@ color_vals <- c(
 
 # Introduction
 
-This analysis examines the effect of different substrate types on the survivorship of red (*Rhizophora mangle*, RHMA) and white (*Laguncularia racemosa*, LARA) mangrove seedlings.
+This analysis examines the effect of different substrate types on the
+survivorship of red (*Rhizophora mangle*, RHMA) and white (*Laguncularia
+racemosa*, LARA) mangrove seedlings.
 
 ## Treatments
 
-1. **Soil**: Traditional potting soil (control)
-2. **Crushed glass**: 100% crushed glass substrate
-3. **25% SG**: 3:1 ratio of crushed glass to *Sargassum*
-4. **75% SG**: 1:3 ratio of crushed glass to *Sargassum*
-5. **100% Sargassum (SG)**: Pure *Sargassum* substrate
+1.  **Soil**: Traditional potting soil (control)
+2.  **Crushed glass**: 100% crushed glass substrate
+3.  **25% SG**: 3:1 ratio of crushed glass to *Sargassum*
+4.  **75% SG**: 1:3 ratio of crushed glass to *Sargassum*
+5.  **100% Sargassum (SG)**: Pure *Sargassum* substrate
 
 ## Hypotheses
 
-### Red Mangroves (RHMA)
-- **H₀₁**: There is no difference in the survivorship of red mangrove seedlings regardless of treatment.
-- **H₁₁**: Red mangroves grown in potting soil will have the greatest survivorship, followed by crushed glass, 25% SG, 75% SG, and 100% Sargassum.
+### Red Mangroves (*Rhizophora mangle*)
 
-### White Mangroves (LARA)
-- **H₀₂**: There is no difference in the survivorship of white mangrove propagules regardless of substrate type.
-- **H₁₂**: White mangroves grown in potting soil will exhibit the greatest survivorship, followed by crushed glass, 25% SG, 75% SG, and 100% Sargassum.
+-   **H₀₁**: There is no difference in the survivorship of red mangrove
+    seedlings regardless of treatment.
+-   **H₁₁**: Red mangroves grown in potting soil will have the greatest
+    survivorship, followed by crushed glass, 25% SG, 75% SG, and 100%
+    *Sargassum*.
+
+### White Mangroves (*Laguncularia racemosa*)
+
+-   **H₀₂**: There is no difference in the survivorship of white
+    mangrove propagules regardless of substrate type.
+-   **H₁₂**: White mangroves grown in potting soil will exhibit the
+    greatest survivorship, followed by crushed glass, 25% SG, 75% SG,
+    and 100% *Sargassum*.
 
 # Data Import and Preparation
 
@@ -84,8 +97,8 @@ ALLDATA <- ALLDATA %>%
       Treatment == "A" ~ "Soil",
       Treatment == "B" ~ "Crushed glass",
       Treatment == "C" ~ "100% Sargassum (SG)",
-      Treatment == "D" ~ "75% SG",
-      Treatment == "E" ~ "25% SG",
+      Treatment == "D" ~ "25% SG",
+      Treatment == "E" ~ "75% SG",
       TRUE ~ as.character(Treatment)
     ),
     Treatment_Name = factor(
@@ -203,8 +216,8 @@ p_survival_curves <- ggplot(survival_by_time,
                   fill = Treatment_Name), 
               alpha = 0.15, 
               linetype = 0) +
-  facet_wrap(~ Species, labeller = labeller(Species = c("LARA" = "White Mangrove (LARA)", 
-                                                         "RHMA" = "Red Mangrove (RHMA)"))) +
+  facet_wrap(~ Species, labeller = labeller(Species = c("LARA" = "L. racemosa (LARA)", 
+                                                         "RHMA" = "R. mangle (RHMA)"))) +
   scale_color_manual(values = color_vals) +
   scale_fill_manual(values = color_vals) +
   scale_shape_manual(values = shape_vals) +
@@ -246,8 +259,8 @@ p_final_survival <- latest_survival %>%
   geom_col(alpha = 0.8) +
   geom_errorbar(aes(ymin = survival_rate - se, ymax = survival_rate + se),
                 width = 0.25) +
-  facet_wrap(~ Species, labeller = labeller(Species = c("LARA" = "White Mangrove", 
-                                                        "RHMA" = "Red Mangrove"))) +
+  facet_wrap(~ Species, labeller = labeller(Species = c("LARA" = "L. racemosa", 
+                                                        "RHMA" = "R. mangle"))) +
   scale_fill_manual(values = color_vals) +
   labs(title = "Final Survival Rates by Treatment",
        x = "Treatment",
@@ -311,7 +324,7 @@ write.csv(survivor_full_history, "C:\\Users\\sarai\\OneDrive\\Email attachments\
 
 ```
 
-## Sargassum Effect
+## *Sargassum* Effect
 
 ```{r sargassum-effect}
 # Compare treatments by Sargassum presence
@@ -436,7 +449,10 @@ pairs_rhma <- subset(pairs_df_or, Species == "RHMA")
 
 ```
 
-Re-fit the model using Firth logistif since there was complete separation due to all the soil and crushed glass surviving for RHMA. This led to differences in the other 3 not being as apparent though.
+Re-fit the model using Firth logistif since there was complete
+separation due to all the soil and crushed glass surviving for RHMA.
+This led to differences in the other 3 not being as apparent though.
+
 ```{r}
 library(logistf)
 library(emmeans)
@@ -478,9 +494,11 @@ rhma_results <- analyze_species_survival(final_data, "RHMA")
 
 ```
 
-
 ## Mixed Effects Model
-This code has the impact of the complete separation caused by the RHMA survivorship
+
+This code has the impact of the complete separation caused by the RHMA
+survivorship
+
 ```{r mixed-model}
 # Account for repeated measures and site effects
 ALLDATA_model <- ALLDATA_clean %>%
@@ -499,7 +517,9 @@ summary(mixed_model)
 cat("\n\nFixed Effects Significance:\n")
 anova(mixed_model)
 ```
+
 Re-run but separate the species
+
 ```{r}
 # --- White mangroves ---
 lara_data <- subset(ALLDATA_model, Species == "LARA")
@@ -533,8 +553,7 @@ summary(emm_rhma)
 pairs(emm_rhma, adjust = "tukey")
 ```
 
-
-## Sargassum Gradient Analysis
+## *Sargassum* Gradient Analysis
 
 ```{r sargassum-gradient}
 # Analyze Sargassum as continuous predictor
@@ -566,7 +585,7 @@ p_gradient <- ggplot(gradient_pred, aes(x = SG_pct, y = pred_survival * 100)) +
              aes(y = obs_survival, color = Species, shape = Treatment_Name), 
              size = 4, alpha = 0.9) +
   scale_color_manual(values = c("RHMA" = "#D73502", "LARA" = "#8B7355"),
-                    labels = c("RHMA" = "Red Mangrove", "LARA" = "White Mangrove")) +
+                    labels = c("RHMA" = "R. mangle", "LARA" = "L. racemosa")) +
   scale_shape_manual(values = shape_vals) +
   labs(title = "Survival Rate vs Sargassum Percentage",
        x = "Sargassum Content (%)",
@@ -581,7 +600,8 @@ print(p_gradient)
 
 ## Kaplan-Meier Survival Analysis
 
-I feel like this is important to show how quickly they died across treatments. However, I need some more clarification on this.
+I feel like this is important to show how quickly they died across
+treatments. However, I need some more clarification on this.
 
 ```{r kaplan-meier}
 # Prepare data for survival analysis
@@ -649,7 +669,7 @@ p_lara <- ggsurvplot(
   risk.table.fontsize = 3,
   risk.table.y.text.col = TRUE, risk.table.y.text = FALSE,
   legend.title = "Treatment",
-  title = "LARA — Kaplan–Meier",
+  title = "L. racemosa — Kaplan–Meier",
   palette = "jco"
 )
 
@@ -799,108 +819,133 @@ species_stats %>%
 
 Based on the comprehensive survivorship analysis:
 
-1. **Treatment Effects**: Statistical tests reveal whether substrate type significantly affects survivorship in both red and white mangroves.
+1.  **Treatment Effects**: Statistical tests reveal whether substrate
+    type significantly affects survivorship in both red and white
+    mangroves.
 
-2. **Hypothesis Support**: The analysis evaluates whether the hypothesized ranking (Soil > Crushed glass > 25% SG > 75% SG > 100% Sargassum) is supported by the data.
+2.  **Hypothesis Support**: The analysis evaluates whether the
+    hypothesized ranking (Soil \> Crushed glass \> 25% SG \> 75% SG \>
+    100% *Sargassum*) is supported by the data.
 
-3. **Sargassum Impact**: Clear evidence shows the negative effect of Sargassum presence on seedling survival, with a dose-dependent response.
+3.  ***Sargassum*** **Impact**: Clear evidence shows the negative effect
+    of *Sargassum* presence on seedling survival, with a dose-dependent
+    response.
 
-4. **Species-Specific Responses**: The analysis reveals whether red and white mangroves respond differently to the treatments.
+4.  **Species-Specific Responses**: The analysis reveals whether red and
+    white mangroves respond differently to the treatments.
 
-5. **Practical Implications**: Results suggest that traditional potting soil remains the optimal substrate for mangrove restoration, while Sargassum-containing substrates should be avoided or minimized.
-
-# Session Information
-
-```{r session-info}
-sessionInfo()
-```
+5.  **Practical Implications**: Results suggest that traditional potting
+    soil remains the optimal substrate for mangrove restoration, while
+    *Sargassum*-containing substrates should be avoided or minimized.
 
 Based on the statistical analyses:
 
 ## Survivorship Findings
 
-### Red Mangroves (Rhizophora mangle)
-**Hypothesis Testing:**
-- **Null Hypothesis 1**: There is no difference in survivorship of red mangrove seedlings regardless of treatment.
-- **Results**: [To be filled based on your actual results]
-  - Overall treatment effect: [Significant/Not significant] (p = [value])
-  - Treatment ranking observed: [List actual order from your data]
-  - Expected ranking: Soil > Crushed glass > 75% SG > 25% SG > 100% Sargassum (SG)
-  -Actual RHMA ranking: Soil > Crushed glass > 75% SG > 100% Sargassum (SG) > 25% SG
-  -Actual LARA ranking: Soil > Crushed glass > 75% SG > 25% SG > 100% Sargassum (SG)
-  - Survival curve differences: [Significant/Not significant] (Log-rank p = [value])
+### Red Mangroves (*Rhizophora mangle*)
 
-**Key Survivorship Findings for Red Mangroves:**
-- [Interpret whether soil performed best as hypothesized]
-- [Describe Sargassum gradient effects on survival]
-- [Note any unexpected survival patterns]
-- [Comment on timing of mortality if relevant]
+**Hypothesis Testing:** - **Null Hypothesis 1**: There is no difference
+in survivorship of red mangrove seedlings regardless of treatment. -
+**Results**: [To be filled based on your actual results] - Overall
+treatment effect: [Significant/Not significant] (p = [value]) -
+Treatment ranking observed: [List actual order from your data] -
+Expected ranking: Soil \> Crushed glass \> 75% SG \> 25% SG \> 100%
+*Sargassum* (SG) -Actual RHMA ranking: Soil \> Crushed glass \> 75% SG
+\> 100% *Sargassum* (SG) \> 25% SG -Actual LARA ranking: Soil \> Crushed
+glass \> 75% SG \> 25% SG \> 100% *Sargassum* (SG) - Survival curve
+differences: [Significant/Not significant] (Log-rank p = [value])
 
-### White Mangroves (Laguncularia racemosa)  
-**Hypothesis Testing:**
-- **Null Hypothesis 2**: There is no difference in survivorship of white mangrove propagules regardless of substrate type.
-- **Results**: [To be filled based on your actual results]
-  - Overall treatment effect: [Significant/Not significant] (p = [value])
-  - Treatment ranking observed: [List actual order from your data]
-  - Expected ranking: Soil > Crushed glass > 75% SG > 25% SG > 100% Sargassum (SG)
-  - Survival curve differences: [Significant/Not significant] (Log-rank p = [value])
+**Key Survivorship Findings for Red Mangroves:** - [Interpret whether
+soil performed best as hypothesized] - [Describe *Sargassum* gradient
+effects on survival] - [Note any unexpected survival patterns] -
+[Comment on timing of mortality if relevant]
 
-**Key Survivorship Findings for White Mangroves:**
-- [Interpret whether soil performed best as hypothesized]
-- [Describe Sargassum gradient effects on survival]
-- [Note any species-specific survival responses]
-- [Comment on timing of mortality if relevant]
+### White Mangroves (*Laguncularia racemosa*)
+
+**Hypothesis Testing:** - **Null Hypothesis 2**: There is no difference
+in survivorship of white mangrove propagules regardless of substrate
+type. - **Results**: [To be filled based on your actual results] -
+Overall treatment effect: [Significant/Not significant] (p = [value]) -
+Treatment ranking observed: [List actual order from your data] -
+Expected ranking: Soil \> Crushed glass \> 75% SG \> 25% SG \> 100%
+*Sargassum* (SG) - Survival curve differences: [Significant/Not
+significant] (Log-rank p = [value])
+
+**Key Survivorship Findings for White Mangroves:** - [Interpret whether
+soil performed best as hypothesized] - [Describe *Sargassum* gradient
+effects on survival] - [Note any species-specific survival responses] -
+[Comment on timing of mortality if relevant]
 
 ## Sargassum Effects on Survivorship
-**Gradient Analysis:**
-- **Sargassum percentage effect on Red mangrove survival**: [Linear relationship present/absent]
-- **Sargassum percentage effect on White mangrove survival**: [Linear relationship present/absent]
-- **Sargassum presence vs absence on survival**: [Beneficial/Detrimental/No effect]
-- **Optimal Sargassum concentration**: [25%/75%/100% or none]
+
+**Gradient Analysis:** - ***Sargassum*** **percentage effect on Red
+mangrove survival**: [Linear relationship present/absent] -
+***Sargassum*** **percentage effect on White mangrove survival**:
+[Linear relationship present/absent] - ***Sargassum*** **presence vs
+absence on survival**: [Beneficial/Detrimental/No effect] - **Optimal
+*Sargassum* concentration**: [25%/75%/100% or none]
 
 ## Species Survivorship Comparisons
-- **Overall survival differences**: [Compare red vs white performance across treatments]
-- **Treatment-specific survival differences**: [Species responses within each treatment]
-- **Interaction effects**: [Whether species respond differently to treatments]
-- **Mortality timing**: [Early vs late mortality patterns by species]
+
+-   **Overall survival differences**: [Compare red vs white performance
+    across treatments]
+-   **Treatment-specific survival differences**: [Species responses
+    within each treatment]
+-   **Interaction effects**: [Whether species respond differently to
+    treatments]
+-   **Mortality timing**: [Early vs late mortality patterns by species]
 
 ## Survival Curve Analysis
-- **Time-to-event patterns**: [Describe when mortality occurred in different treatments]
-- **Treatment separation**: [When survival curves diverged]
-- **Risk periods**: [Identify high-mortality time periods]
+
+-   **Time-to-event patterns**: [Describe when mortality occurred in
+    different treatments]
+-   **Treatment separation**: [When survival curves diverged]
+-   **Risk periods**: [Identify high-mortality time periods]
 
 ## Hypothesis Conclusions
 
 ### Null Hypothesis 1 (Red mangroves): **[ACCEPT/REJECT]**
+
 **Rationale**: [Based on statistical significance and effect sizes]
 
-### Null Hypothesis 2 (White mangroves): **[ACCEPT/REJECT]**  
+### Null Hypothesis 2 (White mangroves): **[ACCEPT/REJECT]**
+
 **Rationale**: [Based on statistical significance and effect sizes]
 
 ## Ecological Implications
 
-**For Mangrove Restoration:**
-- [Recommend best substrate based on results]
-- [Discuss cost-benefit of different treatments]
-- [Consider species-specific recommendations]
+**For Mangrove Restoration:** - [Recommend best substrate based on
+results] - [Discuss cost-benefit of different treatments] - [Consider
+species-specific recommendations]
 
-**Sargassum Utilization:**
-- [Evaluate potential for Sargassum use in restoration]
-- [Discuss optimal Sargassum concentrations if beneficial]
-- [Consider environmental benefits of Sargassum recycling]
+**Sargassum Utilization:** - [Evaluate potential for *Sargassum* use in
+restoration] - [Discuss optimal Sargassum concentrations if
+beneficial] - [Consider environmental benefits of *Sargassum* recycling]
 
-**Study Limitations:**
-- [Note any data quality issues, sample size limitations]
-- [Discuss temporal scale and environmental factors]
-- [Suggest future research directions]
+**Study Limitations:** - [Note any data quality issues, sample size
+limitations] - [Discuss temporal scale and environmental factors] -
+[Suggest future research directions]
 
 ## Recommendations
 
-1. **For Red Mangrove Restoration**: [Specific substrate recommendation]
-2. **For White Mangrove Restoration**: [Specific substrate recommendation]  
-3. **Sargassum Management**: [Recommendations for Sargassum use]
-4. **Future Research**: [Suggest long-term studies, additional factors to investigate]
+1.  **For Red Mangrove Restoration**: [Specific substrate
+    recommendation]
+2.  **For White Mangrove Restoration**: [Specific substrate
+    recommendation]\
+3.  ***Sargassum*** **Management**: [Recommendations for *Sargassum*
+    use]
+4.  **Future Research**: [Suggest long-term studies, additional factors
+    to investigate]
 
----
+------------------------------------------------------------------------
 
-*Analysis completed with `r nrow(distinct(ALLDATA_clean, Species, Prop_ID))` unique plants across `r length(unique(ALLDATA_clean$Treatment_Name))` treatments over `r length(unique(ALLDATA_clean$Time_Period))` time periods. Quality control removed `r nrow(flagged_ids)` plants with data inconsistencies.*
+*Analysis completed with
+`r nrow(distinct(ALLDATA_clean, Species, Prop_ID))` unique plants across
+`r length(unique(ALLDATA_clean$Treatment_Name))` treatments over
+`r length(unique(ALLDATA_clean$Time_Period))` time periods. Quality
+control removed `r nrow(flagged_ids)` plants with data inconsistencies.*
+
+# Session Information
+
+```{r session-info} sessionInfo()}
+```
