@@ -83,8 +83,8 @@ ALLDATA <- ALLDATA %>%
       Treatment == "A" ~ "Soil",
       Treatment == "B" ~ "Crushed glass",
       Treatment == "C" ~ "100% Sargassum (SG)",
-      Treatment == "D" ~ "75% SG",
-      Treatment == "E" ~ "25% SG",
+      Treatment == "D" ~ "25% SG",
+      Treatment == "E" ~ "75% SG",
       TRUE ~ as.character(Treatment)
     ),
     Treatment_Name = factor(
@@ -240,12 +240,12 @@ p_height_time <- ggplot(height_by_time,
                     ymax = mean_height + se_height),
                 width = 0.1) +
   facet_wrap(~ Species, scales = "free_y",
-             labeller = labeller(Species = c("LARA" = "White Mangrove (LARA)", 
-                                            "RHMA" = "Red Mangrove (RHMA)"))) +
+             labeller = labeller(Species = c("LARA" = "L. racemosa", 
+                                            "RHMA" = "R. mangle"))) +
   scale_color_manual(values = color_vals) +
   scale_shape_manual(values = shape_vals) +
   labs(title = "Mean Height Over Time (Survivors Only)",
-       subtitle = "RHMA: Epicotyl Length | LARA: Shoot Height",
+       subtitle = expression(italic("L. racemosa: ")*"Shoot Height | "*italic("R. mangle: ")* "Epicotyl Length") ,
        x = "Time Period",
        y = "Height (cm)",
        color = "Treatment",
@@ -302,12 +302,12 @@ p_height_replicates <- ggplot(height_by_replicate,
                geom = "point", 
                size = 3) +
   facet_wrap(~ Species, scales = "free_y",
-             labeller = labeller(Species = c("LARA" = "White Mangrove (LARA)", 
-                                            "RHMA" = "Red Mangrove (RHMA)"))) +
+             labeller = labeller(Species = c("LARA" = "L. racemosa", 
+                                            "RHMA" = "R. mangle"))) +
   scale_color_manual(values = color_vals) +
   scale_shape_manual(values = shape_vals) +
   labs(title = "Height Over Time - Replicate Means (Faint Lines) and Treatment Means (Bold)",
-       subtitle = "RHMA: Epicotyl Length | LARA: Max Height",
+       subtitle = expression(italic("R. mangle: "*"Epicotyl Length | "*italic("L. racemosa: "*"Max Height"))),
        x = "Time Period",
        y = "Height (cm)",
        color = "Treatment",
@@ -404,7 +404,7 @@ if(nrow(lara_both_heights) > 0) {
     geom_point(alpha = 0.6, size = 2) +
     geom_smooth(method = "lm", se = TRUE, alpha = 0.2) +
     scale_color_manual(values = color_vals) +
-    labs(title = "LARA Height Above Substrate vs Height Above Pot Correlation",
+    labs(title = expression(italic("L. racemosa ")* "Height Above Substrate vs Height Above Pot Correlation"),
          subtitle = paste("r =", round(cor_test$estimate, 3), 
                          ", p =", format.pval(cor_test$p.value, digits = 3)),
          x = "Height Above Substrate (cm)",
@@ -852,7 +852,9 @@ height_change_data <- growth_data %>%
   filter(!is.na(TP_0) & !is.na(TP_6)) %>%  # Only include plants with both measurements
   mutate(
     Height_Change = TP_6 - TP_0,  # Calculate growth
-    Percent_Change = ((TP_6 - TP_0) / TP_0) * 100  # Calculate percent change
+    Height_Change = as.numeric(Height_Change),   # ensure numeric
+    Percent_Change = ((TP_6 - TP_0) / TP_0) * 100,  # Calculate percent change
+    Treatment_Name = droplevels(factor(Treatment_Name))
   )
 
 # Summary statistics by treatment and species
@@ -910,75 +912,105 @@ p_growth <- ggplot(height_change_data,
 
 print(p_growth)
 
+library(rcompanion)
+library(rstatix)
 ##Analysis time
 # Split by species
 lara_data <- height_change_data %>% filter(Species == "LARA")
 rhma_data <- height_change_data %>% filter(Species == "RHMA")
 
-# Kruskal–Wallis for LARA
-kruskal_lara <- kruskal.test(Height_Change ~ Treatment_Name, data = lara_data)
-kruskal_lara
+#LARA specific code
+# 1) Count per treatment
+n_by_trt <- lara_data %>% count(Treatment_Name, name = "n")
 
-# Kruskal–Wallis for RHMA
-kruskal_rhma <- kruskal.test(Height_Change ~ Treatment_Name, data = rhma_data)
-kruskal_rhma
+# 2) Keep only groups with n >= 2 for post-hoc tests
+keep_trt <- n_by_trt %>% filter(n >= 2) %>% pull(Treatment_Name)
+lara_pair <- lara_data %>% filter(Treatment_Name %in% keep_trt) %>% droplevels()
 
-#Dunns post-hoc test (with bonferroni corrections)
-library(FSA)   # for dunnTest
+# 3) KW + Dunn (use "holm" or your original "bonferroni")
+kw_lara   <- kruskal_test(lara_pair, Height_Change ~ Treatment_Name)
+dunn_lara <- dunn_test(lara_pair, Height_Change ~ Treatment_Name,
+                       p.adjust.method = "bonferroni")
 
-# LARA pairwise comparisons
-dunn_lara <- dunnTest(Height_Change ~ Treatment_Name, data = lara_data,
-                      method = "bonferroni")
-dunn_lara
+# 4) Compact-letter display
+dunn_pairs <- dunn_lara %>%
+  mutate(Comparison = paste(group1, group2, sep = " - ")) %>%
+  select(Comparison, p.adj)
 
-# RHMA pairwise comparisons
-dunn_rhma <- dunnTest(Height_Change ~ Treatment_Name, data = rhma_data,
-                      method = "bonferroni")
+cld_lara <- cldList(p.adj ~ Comparison, data = dunn_pairs, threshold = 0.05) %>%
+  rename(Treatment_Name = Group, Letter = Letter)
+
+#fix the treatment names
+cld_lara <- cld_lara %>%
+  mutate(
+    Species = "LARA",
+    Treatment_Name = case_when(
+      Treatment_Name == "Crushedglass" ~ "Crushed glass",
+      Treatment_Name == "25%SG"        ~ "25% SG",
+      Treatment_Name == "75%SG"        ~ "75% SG",
+      TRUE ~ Treatment_Name
+    ),
+    # tidy any stray spaces in letters
+    Letter     = str_squish(Letter),
+    MonoLetter = str_squish(MonoLetter)
+  )
+
+# 5) Join letters back to a summary (show "n<2" tag for small groups)
+summ_lara <- lara_data %>%
+  group_by(Treatment_Name) %>%
+  summarise(n = n(),
+            median_change = median(Height_Change, na.rm = TRUE),
+            .groups = "drop") %>%
+  left_join(cld_lara, by = "Treatment_Name") %>%
+  mutate(Letter = ifelse(n < 2, "n<2", Letter),
+         Species = "LARA")
+###
+
+
+kw_rhma  <- kruskal_test(rhma_data, Height_Change ~ Treatment_Name)
+
+dunn_rhma <- dunn_test(rhma_data, Height_Change ~ Treatment_Name,
+                       p.adjust.method = "bonferroni")
+kw_rhma
 dunn_rhma
 
 #Cleaner output with adjusted p-values
-lara_pairs <- dunn_lara$res %>%
-  dplyr::select(Comparison, Z, P.unadj, P.adj)
-rhma_pairs <- dunn_rhma$res %>%
-  dplyr::select(Comparison, Z, P.unadj, P.adj)
+rhma_pairs <- dunn_rhma %>%
+  mutate(Comparison = paste(group1, group2, sep = " - ")) %>%
+  select(Comparison, p.adj)
+# Generate letters. Turn the letters into tidy data frames (per species)
+cld_rhma <- cldList(p.adj ~ Comparison, data = rhma_pairs, threshold = 0.05) %>%
+  rename(Treatment_Name = Group, Letter = Letter)
 
-lara_pairs
-rhma_pairs
-#these appear to return the same thing as the dunn_rhma and the dunn_lara but are needed for the next part of the code
+#fix the treatment names
+cld_rhma <- cld_rhma %>%
+  mutate(
+    Species = "RHMA",
+    Treatment_Name = case_when(
+      Treatment_Name == "Crushedglass" ~ "Crushed glass",
+      Treatment_Name == "25%SG"        ~ "25% SG",
+      Treatment_Name == "75%SG"        ~ "75% SG",
+      Treatment_Name == "1%Sargassum(SG)"  ~ "100% Sargassum (SG)",
+      TRUE ~ Treatment_Name
+    ),
+    # tidy any stray spaces in letters
+    Letter     = str_squish(Letter),
+    MonoLetter = str_squish(MonoLetter)
+  )
+summ_rhma <- rhma_data %>%
+  group_by(Treatment_Name) %>%
+  summarise(n = n(),
+            median_change = median(Height_Change, na.rm = TRUE),
+            .groups = "drop") %>%
+  left_join(cld_rhma, by = "Treatment_Name") %>%
+  mutate(Letter = ifelse(n < 2, "n<2", Letter))
 
 #Make a plot with significant letters
-library(multcompView)
-
-# Convert to named p-value list
-pvals_lara <- setNames(lara_pairs$P.adj, lara_pairs$Comparison)
-pvals_rhma <- setNames(rhma_pairs$P.adj, rhma_pairs$Comparison)
-
-# Generate letters
-letters_lara <- multcompLetters(pvals_lara, threshold = 0.05)
-letters_lara$Letters
-
-letters_rhma <- multcompLetters(pvals_rhma, threshold = 0.05)
-letters_rhma$Letters
-
 library(dplyr)
 library(tibble)
 library(multcompView)
 
-
-# 1) Turn the letters into tidy data frames (per species)
-cld_lara <- tibble(
-  Species = "LARA",
-  Treatment_Name = names(letters_lara$Letters),
-  Letter = unname(letters_lara$Letters)
-)
-
-cld_rhma <- tibble(
-  Species = "RHMA",
-  Treatment_Name = names(letters_rhma$Letters),
-  Letter = unname(letters_rhma$Letters)
-)
-
-cld_all <- bind_rows(cld_lara, cld_rhma)
+cld_all <- bind_rows(summ_lara, summ_rhma)
 
 # 2) Compute y-positions (per species & treatment) so letters sit above the boxes
 #    Add a small species-specific offset so letters clear the top whisker nicely.
@@ -1105,13 +1137,44 @@ clean_treatment <- function(df, treat_col) {
         .data[[treat_col]] == "A" ~ "Soil",
         .data[[treat_col]] == "B" ~ "Crushed glass",
         .data[[treat_col]] == "C" ~ "100% Sargassum (SG)",
-        .data[[treat_col]] == "D" ~ "75% SG",
-        .data[[treat_col]] == "E" ~ "25% SG",
+        .data[[treat_col]] == "D" ~ "25% SG",
+        .data[[treat_col]] == "E" ~ "75% SG",
         TRUE ~ as.character(.data[[treat_col]])
       ),
       treatment_name = factor(treatment_name, levels = treat_levels)
     )
 }
+
+# ---- RGR sanity filter (keep existing rgr; only flag extremes) ----
+stopifnot(!is.na(rgr_col), rgr_col %in% names(RGR))
+
+init_col  <- pick_col(RGR, c("initial_wt","initial","initial_g","init_wt"))
+final_col <- pick_col(RGR, c("tot_fresh_wt","final_wet","final_wet_wt","fresh_wt","tot_fresh_g","final_fresh_wt"))
+time_col  <- if ("weeks" %in% names(RGR)) "weeks" else if ("days" %in% names(RGR)) "days" else NA_character_
+
+RGR <- RGR %>%
+  mutate(
+    !!rgr_col := suppressWarnings(as.numeric(.data[[rgr_col]])),
+    .init  = if (!is.na(init_col))  suppressWarnings(as.numeric(.data[[init_col]]))  else NA_real_,
+    .final = if (!is.na(final_col)) suppressWarnings(as.numeric(.data[[final_col]])) else NA_real_,
+    .weeks = case_when(
+      !is.na(time_col) & time_col == "weeks" ~ suppressWarnings(as.numeric(.data[[time_col]])),
+      !is.na(time_col) & time_col == "days"  ~ suppressWarnings(as.numeric(.data[[time_col]])) / 7,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  # keep only finite RGR; negatives are fine
+  filter(is.finite(.data[[rgr_col]])) %>%
+  # if inputs exist, enforce they are positive (still OK to keep extreme RGR values)
+  { out <- .
+    if (!is.na(init_col))  out <- dplyr::filter(out, .init  > 0)
+    if (!is.na(final_col)) out <- dplyr::filter(out, .final > 0)
+    if (!is.na(time_col))  out <- dplyr::filter(out, .weeks > 0)
+    out
+  } %>%
+  # <<< add this line to flag, not filter >>>
+  mutate(flag_big_rgr = abs(.data[[rgr_col]]) > 0.2) %>%
+  select(-.init, -.final, -.weeks)
 
 summarize_metric <- function(df, value_col, group_cols) {
   df %>%
@@ -1135,17 +1198,21 @@ plot_box <- function(df, value_col, treat_col, species_col = NA_character_,
       .sp  = if (!is.na(species_col)) .data[[species_col]] else NULL
     ) %>%
     filter(is.finite(.val), !is.na(.trt)) %>%
-    # prefer the cleaned label if present
-    mutate(.trt_name = if ("treatment_name" %in% names(.)) treatment_name else .trt) %>%
+    mutate(
+      .trt_name = if ("treatment_name" %in% names(.)) treatment_name else .trt,
+      .trt_name = factor(.trt_name, levels = treat_levels)
+    ) %>%
     ggplot(aes(x = .trt_name, y = .val,
                color = .trt_name, shape = .trt_name, group = .trt_name)) +
-    # Hollow box outlines
     geom_boxplot(fill = NA, outlier.shape = NA, linewidth = 0.6) +
-    # Hollow jittered points (stroke draws the outline)
     geom_point(position = position_jitter(width = 0.15, height = 0),
-               size = 1.8, stroke = 0.8) +
-    scale_color_manual(values = okabe_ito, name = "Treatment") +
-    scale_shape_manual(values = shape_vals, name = "Treatment") +
+               size = 1.8, stroke = 0.8, fill = NA) +
+    scale_color_manual(values = color_vals,
+                       limits = names(color_vals), drop = FALSE,
+                       name = "Treatment") +
+    scale_shape_manual(values = shape_vals,
+                       limits = names(shape_vals), drop = FALSE,
+                       name = "Treatment") +
     labs(title = title, x = "Treatment", y = ylab) +
     theme_bw(base_size = 12) +
     theme(axis.text.x = element_text(angle = 45, hjust = 1),
@@ -1207,18 +1274,15 @@ RGR_sum <- if (!is.na(rgr_col)) summarize_metric(RGR, rgr_col, group_vars) else 
 
 # --------- 5) Optional: join AGR + RGR by ID --------------------------------
 Combined_by_ID <- NULL
-# columns that actually exist (robust)
 cols_left  <- intersect(na.omit(unique(c(id_col, species_col, treat_col, "treatment_name", agr_col))), names(AGR))
 cols_right <- intersect(na.omit(unique(c(id_col, rgr_col))), names(RGR))
 
 if (!is.na(id_col) && id_col %in% names(AGR) && id_col %in% names(RGR) &&
     !is.na(agr_col) && !is.na(rgr_col)) {
-
   Combined_by_ID <- dplyr::left_join(
     dplyr::select(AGR, dplyr::all_of(cols_left)),
     dplyr::select(RGR, dplyr::all_of(cols_right)),
-    by = setNames(id_col, id_col)        # explicit key mapping
-    # relationship = "many-to-many"      # keep ONLY if dplyr >= 1.1.0
+    by = setNames(id_col, id_col)
   )
 
   readr::write_csv(
@@ -1226,28 +1290,24 @@ if (!is.na(id_col) && id_col %in% names(AGR) && id_col %in% names(RGR) &&
     "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\Combined_AGR_RGR_by_ID.csv"
   )
   cat("\nWrote Combined_AGR_RGR_by_ID.csv\n")
+} else {
+  Combined_by_ID <- tibble()
 }
 
 # --------- 6) Plots (hollow shapes; centered titles; italic species suffix) ---
 if (!is.na(agr_col)) {
   p_agr <- plot_box(
     df = AGR, value_col = agr_col, treat_col = treat_group_col, species_col = species_col,
-    title = "Absolute Growth Rate (AGR) by Treatment", ylab = "AGR (units)"
-  ) +
-    scale_color_manual(values = color_vals, limits = names(color_vals), drop = FALSE, name = "Treatment") +
-    scale_shape_manual(values = shape_vals, limits = names(shape_vals), drop = FALSE, name = "Treatment") +
-    theme(plot.title = element_text(hjust = 0.5))
+    title = "Mean Absolute Growth Rate (AGR) by Treatment", ylab = "AGR (units)"
+  ) + theme(plot.title = element_text(hjust = 0.5))
   print(p_agr)
 }
 
 if (!is.na(rgr_col)) {
   p_rgr <- plot_box(
     df = RGR, value_col = rgr_col, treat_col = treat_group_col, species_col = species_col,
-    title = "Relative Growth Rate (RGR) by Treatment", ylab = "RGR (per interval)"
-  ) +
-    scale_color_manual(values = color_vals, limits = names(color_vals), drop = FALSE, name = "Treatment") +
-    scale_shape_manual(values = shape_vals, limits = names(shape_vals), drop = FALSE, name = "Treatment") +
-    theme(plot.title = element_text(hjust = 0.5))
+    title = "Mean Relative Growth Rate (RGR) by Treatment", ylab = "RGR (per interval)"
+  ) + theme(plot.title = element_text(hjust = 0.5))
   print(p_rgr)
 }
 
@@ -1282,6 +1342,31 @@ anova(fit_rgr_R)
 emmeans(fit_rgr_R, ~ treatment_name) |> pairs(adjust = "tukey")
 
 ```
+What your tests say (succinct)
+LARA
+
+AGR: Treatment effect *** (p < 0.001). Soil > {Crushed glass, 25% SG, 75% SG}; the three non-soil treatments are not different from each other (Tukey).
+
+RGR: Treatment effect *** (p < 0.001). Soil ≈ 75% SG (n.s.); both > 25% SG > Crushed glass (all those pairwise diffs significant).
+
+CLD (letters) suggestion:
+
+AGR: Soil a; CG/25%/75% b
+
+RGR: Soil, 75% a; 25% b; CG c
+
+RHMA
+
+AGR: Treatment effect *** (p < 0.001). Soil ≈ Crushed glass (n.s.) and both > {25% SG, 75% SG, 100% SG}.
+
+RGR: Treatment effect *** (p < 0.001). Soil > {CG, 25%, 75%, 100%}; no differences among the four non-soil treatments (Tukey).
+
+CLD (letters) suggestion:
+
+AGR: Soil, CG a; 25%/75%/100% b
+
+RGR: Soil a; CG/25%/75%/100% b
+
 
 Report EMMeans with 95% CIs and compact letter displays (CLDs) on your plots.
 ```{r}
@@ -1425,7 +1510,7 @@ branch_summary <- branch_data %>%
 
 branch_summary %>%
   arrange(Species, desc(mean_branches)) %>%
-  kable(caption = "Branching Summary by Treatment (Final Time Period)",
+  kable(caption = "Branching Summary by Treatment (After 6 Months)",
         col.names = c("Treatment", "Species", "N", "Mean", "SD", "SE", 
                      "Median", "% With Branches"),
         digits = 2) %>%
@@ -1440,11 +1525,11 @@ p_branches <- ggplot(branch_data,
   geom_jitter(aes(color = Treatment_Name), 
               width = 0.1, alpha = 0.4, size = 1.5) +
   facet_wrap(~ Species,
-             labeller = labeller(Species = c("LARA" = "White Mangrove", 
-                                            "RHMA" = "Red Mangrove"))) +
+             labeller = labeller(Species = c("LARA" = "L. racemosa", 
+                                            "RHMA" = "R. mangle"))) +
   scale_fill_manual(values = color_vals) +
   scale_color_manual(values = color_vals) +
-  labs(title = "Number of Branches by Treatment",
+  labs(title = "Number of Branches by Treatment After 6 Months",
        x = "Treatment",
        y = "Number of Branches") +
   theme_minimal() +
@@ -1478,7 +1563,7 @@ node_summary <- node_data %>%
 
 node_summary %>%
   arrange(Species, desc(mean_nodes)) %>%
-  kable(caption = "Node Summary by Treatment (Final Time Period)",
+  kable(caption = "Node Summary by Treatment (After 6 Months)",
         col.names = c("Treatment", "Species", "N", "Mean", "SD", "SE", 
                      "Median", "Min", "Max"),
         digits = 2) %>%
@@ -1493,11 +1578,11 @@ p_nodes <- ggplot(node_data,
   geom_jitter(aes(color = Treatment_Name), 
               width = 0.1, alpha = 0.4, size = 1.5) +
   facet_wrap(~ Species,
-             labeller = labeller(Species = c("LARA" = "White Mangrove", 
-                                            "RHMA" = "Red Mangrove"))) +
+             labeller = labeller(Species = c("LARA" = "L. racemosa", 
+                                            "RHMA" = "R. mangle"))) +
   scale_fill_manual(values = color_vals) +
   scale_color_manual(values = color_vals) +
-  labs(title = "Total Nodes by Treatment",
+  labs(title = "Total Nodes by Treatment After 6 Months",
        x = "Treatment",
        y = "Total Nodes") +
   theme_minimal() +
@@ -1530,7 +1615,7 @@ leaf_summary <- leaf_data %>%
 
 leaf_summary %>%
   arrange(Species, desc(mean_leaves)) %>%
-  kable(caption = "Leaf Summary by Treatment (Final Time Period)",
+  kable(caption = "Leaf Summary by Treatment (After 6 Months)",
         col.names = c("Treatment", "Species", "N", "Mean", "SD", "SE", 
                      "Median", "% With Leaves"),
         digits = 2) %>%
@@ -1545,11 +1630,11 @@ p_leaves <- ggplot(leaf_data,
   geom_jitter(aes(color = Treatment_Name), 
               width = 0.1, alpha = 0.4, size = 1.5) +
   facet_wrap(~ Species,
-             labeller = labeller(Species = c("LARA" = "White Mangrove", 
-                                            "RHMA" = "Red Mangrove"))) +
+             labeller = labeller(Species = c("LARA" = "L. racemosa", 
+                                            "RHMA" = "R. mangle"))) +
   scale_fill_manual(values = color_vals) +
   scale_color_manual(values = color_vals) +
-  labs(title = "Total Leaves by Treatment",
+  labs(title = "Total Leaves by Treatment After 6 Months",
        x = "Treatment",
        y = "Total Leaves") +
   theme_minimal() +
@@ -1814,8 +1899,8 @@ This entire section needs some work. It's just for visulaization mostly.
 
 ```{r rgr-stats}
 # ANOVA for RGR
-if(nrow(rgr_data) > 0) {
-  rgr_model <- lm(rgr ~ Treatment_Name * Species, data = rgr_data)
+if(nrow(RGR) > 0) {
+  rgr_model <- lm(rgr ~ treatment_name * Species, data = RGR)
   
   cat("ANOVA for Relative Growth Rate:\n")
   print(anova(rgr_model))
@@ -1825,7 +1910,7 @@ if(nrow(rgr_data) > 0) {
   print(eta_squared(rgr_model))
   
   # Post-hoc comparisons
-  rgr_emmeans <- emmeans(rgr_model, ~ Treatment_Name | Species)
+  rgr_emmeans <- emmeans(rgr_model, ~ treatment_name | Species)
   cat("\n\nEstimated Marginal Means for RGR:\n")
   print(summary(rgr_emmeans))
   
@@ -1853,6 +1938,37 @@ if(nrow(branch_data) > 0) {
   cat("\n\nTukey HSD for Branches:\n")
   print(pairs(branch_emmeans, adjust = "tukey"))
 }
+
+# --- 1) Fit once and get CLD letters per Species ---
+fit_br <- lm(Number_Branches_num ~ Treatment_Name * Species, data = branch_data)
+
+cld_br <- emmeans(fit_br, ~ Treatment_Name | Species) |>
+  cld(adjust = "tukey", Letters = letters) |>
+  as.data.frame() |>
+  transmute(
+    Species,
+    Treatment_Name,
+    letters = trimws(.group)
+  )
+
+# --- 2) Compute y-positions (a bit above each box) for overlay ---
+y_pad <- 0.5  # tweak to taste
+pos_br <- branch_data |>
+  group_by(Species, Treatment_Name) |>
+  summarise(y = max(Number_Branches_num, na.rm = TRUE) + y_pad, .groups = "drop") |>
+  left_join(cld_br, by = c("Species", "Treatment_Name"))
+
+# --- 3) Overlay CLD letters (and add headroom so they don't clip) ---
+p_branches <- p_branches +
+  geom_text(
+    data = pos_br,
+    aes(x = Treatment_Name, y = y, label = letters),
+    inherit.aes = FALSE,
+    size = 4
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+print(p_branches)
 ```
 
 ## Node Analysis
@@ -1874,7 +1990,86 @@ if(nrow(node_data) > 0) {
   cat("\n\nTukey HSD for Nodes:\n")
   print(pairs(node_emmeans, adjust = "tukey"))
 }
+
+# --- 1) Fit once and get CLD letters per Species ---
+fit_nodes <- lm(Total_Nodes_num ~ Treatment_Name * Species, data = branch_data)
+
+cld_br <- emmeans(fit_nodes, ~ Treatment_Name | Species) |>
+  cld(adjust = "tukey", Letters = letters) |>
+  as.data.frame() |>
+  transmute(
+    Species,
+    Treatment_Name,
+    letters = trimws(.group)
+  )
+
+# --- 2) Compute y-positions (a bit above each box) for overlay ---
+y_pad <- 0.8  # tweak to taste
+pos_br <- node_data |>
+  group_by(Species, Treatment_Name) |>
+  summarise(y = max(Total_Nodes_num, na.rm = TRUE) + y_pad, .groups = "drop") |>
+  left_join(cld_br, by = c("Species", "Treatment_Name"))
+
+# --- 3) Overlay CLD letters (and add headroom so they don't clip) ---
+p_nodes <- p_nodes +
+  geom_text(
+    data = pos_br,
+    aes(x = Treatment_Name, y = y, label = letters),
+    inherit.aes = FALSE,
+    size = 4
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+print(p_nodes)
 ```
+
+```{r leaf-stats}
+if (nrow(leaf_data) > 0) {
+  # Model
+  leaf_model <- lm(Total_Leaves_num ~ Treatment_Name * Species, data = leaf_data)
+
+  cat("ANOVA for Total Leaves:\n")
+  print(anova(leaf_model))
+
+  cat("\n\nEffect Sizes (Eta-squared):\n")
+  print(eta_squared(leaf_model))
+
+  # Post-hoc per species
+  leaf_emmeans <- emmeans(leaf_model, ~ Treatment_Name | Species)
+  cat("\n\nTukey HSD for Leaves:\n")
+  print(pairs(leaf_emmeans, adjust = "tukey"))
+
+  # --- CLD letters for overlay ---
+  leaf_cld <- leaf_emmeans |>
+    cld(adjust = "tukey", Letters = letters) |>
+    as.data.frame() |>
+    transmute(
+      Species,
+      Treatment_Name,
+      letters = trimws(.group)
+    )
+
+  # y-positions a bit above each box/violin per facet
+  y_pad <- 1.5  # raise if labels crowd whiskers
+  pos_leaves <- leaf_data |>
+    group_by(Species, Treatment_Name) |>
+    summarise(y = max(Total_Leaves_num, na.rm = TRUE) + y_pad, .groups = "drop") |>
+    left_join(leaf_cld, by = c("Species", "Treatment_Name"))
+
+  # Overlay letters on your existing plot `p_leaves`
+  p_leaves <- p_leaves +
+    geom_text(
+      data = pos_leaves,
+      aes(x = Treatment_Name, y = y, label = letters),
+      inherit.aes = FALSE, size = 4
+    ) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.20))) +
+    coord_cartesian(clip = "off")
+
+  print(p_leaves)
+}
+```
+
 
 # Results Summary
 
@@ -1895,12 +2090,15 @@ if(exists("height_summary")) {
   rankings <- height_ranks
 }
 
+RGR_sum <- RGR_sum %>%
+  rename(mean_rgr = mean,
+         Treatment_Name = treatment_name)
 # Add RGR ranks
-if(exists("rgr_summary")) {
-  rgr_ranks <- rgr_summary %>%
+if(exists("RGR_sum")) {
+  rgr_ranks <- RGR_sum %>%
     group_by(Species) %>%
     arrange(desc(mean_rgr)) %>%
-    mutate(rgr_rank = row_number()) %>%
+    mutate(rgr_rank = row_number())%>%
     select(Species, Treatment_Name, mean_rgr, rgr_rank)
   
   if(nrow(rankings) > 0) {
@@ -1935,13 +2133,25 @@ if(exists("node_summary")) {
     left_join(node_ranks, by = c("Species", "Treatment_Name"))
 }
 
+# Add leaf ranks
+if(exists("leaf_summary")) {
+  leaf_ranks <- leaf_summary %>%
+    group_by(Species) %>%
+    arrange(desc(mean_leaves)) %>%
+    mutate(leaf_rank = row_number()) %>%
+    select(Species, Treatment_Name, mean_leaves, leaf_rank)
+  
+  rankings <- rankings %>%
+    left_join(leaf_ranks, by = c("Species", "Treatment_Name"))
+}
+
 # Display comprehensive rankings
 rankings %>%
   arrange(Species, Treatment_Name) %>%
   kable(caption = "Comprehensive Growth Metric Rankings",
         col.names = c("Species", "Treatment", "Height (cm)", "H.Rank", 
                      "RGR", "RGR.Rank", "Branches", "B.Rank",
-                     "Nodes", "N.Rank"),
+                     "Nodes", "N.Rank", "Leaves", "L.Rank"),
         digits = 3) %>%
   kable_styling(bootstrap_options = c("striped", "hover")) %>%
   row_spec(which(rankings$Treatment_Name == "Soil"), bold = TRUE)
@@ -1949,7 +2159,7 @@ rankings %>%
 # Calculate average rank
 avg_ranks <- rankings %>%
   rowwise() %>%
-  mutate(avg_rank = mean(c(height_rank, rgr_rank, branch_rank, node_rank), na.rm = TRUE)) %>%
+  mutate(avg_rank = mean(c(height_rank, rgr_rank, branch_rank, node_rank, leaf_rank), na.rm = TRUE)) %>%
   group_by(Species) %>%
   arrange(avg_rank) %>%
   select(Species, Treatment_Name, avg_rank)
@@ -1964,15 +2174,16 @@ print(avg_ranks)
 alpha <- 0.05
 growth_expected_order <- c("Soil", "75% SG", "25% SG", "100% Sargassum (SG)", "Crushed glass")
 
-cat("="*60, "\n")
+cat(strrep("=",60), "\n")
 cat("GROWTH HYPOTHESES TESTING RESULTS\n")
-cat("="*60, "\n\n")
+cat(strrep("=",60), "\n\n")
 
 # Test H3 and H4 for each metric
 metrics <- list(
-  "RGR" = if(exists("rgr_summary")) rgr_summary else NULL,
+  "RGR" = if(exists("RGR_sum")) RGR_sum else NULL,
   "Branches" = if(exists("branch_summary")) branch_summary else NULL,
-  "Nodes" = if(exists("node_summary")) node_summary else NULL
+  "Nodes" = if(exists("node_summary")) node_summary else NULL,
+  "Leaves" = if(exists("leaf_summary")) leaf_summary else NULL
 )
 
 for(metric_name in names(metrics)) {
@@ -1980,7 +2191,7 @@ for(metric_name in names(metrics)) {
   
   if(!is.null(metric_data)) {
     cat("\n", metric_name, " RANKINGS:\n", sep = "")
-    cat("-"*40, "\n")
+    cat(strrep("-",40), "\n")
     
     for(sp in unique(metric_data$Species)) {
       cat("\n", sp, ":\n", sep = "")
@@ -2006,7 +2217,7 @@ for(metric_name in names(metrics)) {
 
 # Statistical significance summary
 cat("\n\nSTATISTICAL SIGNIFICANCE:\n")
-cat("-"*40, "\n")
+cat(strrep("-",40), "\n")
 
 if(exists("rgr_model")) {
   rgr_anova <- anova(rgr_model)
@@ -2028,6 +2239,13 @@ if(exists("node_model")) {
   cat("\n\nNode Treatment Effect: p =", round(node_p, 4))
   cat("\nDecision:", ifelse(node_p < alpha, "SIGNIFICANT", "NOT SIGNIFICANT"))
 }
+
+if(exists("leaf_model")) {
+  leaf_anova <- anova(leaf_model)
+  leaf_p <- leaf_anova["Treatment_Name", "Pr(>F)"]
+  cat("\n\nLeaf Treatment Effect: p =", round(leaf_p, 4))
+  cat("\nDecision:", ifelse(leaf_p < alpha, "SIGNIFICANT", "NOT SIGNIFICANT"))
+}
 ```
 
 ## Multi-Metric Comparison
@@ -2037,11 +2255,13 @@ if(exists("node_model")) {
 if(exists("height_summary") & exists("rgr_summary") & exists("branch_summary")) {
   overview_data <- height_summary %>%
     select(Treatment_Name, Species, mean_height) %>%
-    left_join(rgr_summary %>% select(Treatment_Name, Species, mean_rgr), 
+    left_join(RGR_sum %>% select(Treatment_Name, Species, mean_rgr), 
               by = c("Treatment_Name", "Species")) %>%
     left_join(branch_summary %>% select(Treatment_Name, Species, mean_branches), 
               by = c("Treatment_Name", "Species")) %>%
     left_join(node_summary %>% select(Treatment_Name, Species, mean_nodes),
+              by = c("Treatment_Name", "Species")) %>%
+    left_join(leaf_summary %>% select(Treatment_Name, Species, mean_leaves),
               by = c("Treatment_Name", "Species"))
   
   # Normalize values for comparison (scale to 0-1)
@@ -2051,7 +2271,8 @@ if(exists("height_summary") & exists("rgr_summary") & exists("branch_summary")) 
       height_scaled = (mean_height - min(mean_height)) / (max(mean_height) - min(mean_height)),
       rgr_scaled = (mean_rgr - min(mean_rgr)) / (max(mean_rgr) - min(mean_rgr)),
       branches_scaled = (mean_branches - min(mean_branches)) / (max(mean_branches) - min(mean_branches)),
-      nodes_scaled = (mean_nodes - min(mean_nodes)) / (max(mean_nodes) - min(mean_nodes))
+      nodes_scaled = (mean_nodes - min(mean_nodes)) / (max(mean_nodes) - min(mean_nodes)),
+      leaves_scaled = (mean_leaves - min(mean_leaves)) / (max(mean_leaves) - min(mean_leaves))
     ) %>%
     ungroup()
   
@@ -2064,15 +2285,15 @@ if(exists("height_summary") & exists("rgr_summary") & exists("branch_summary")) 
     mutate(metric = factor(metric, 
                           levels = c("height_scaled", "rgr_scaled", 
                                     "branches_scaled", "nodes_scaled"),
-                          labels = c("Height", "RGR", "Branches", "Nodes")))
+                          labels = c("Height", "RGR", "Branches", "Nodes", "Leaves")))
   
   p_overview <- ggplot(overview_long, 
                        aes(x = value, y = Treatment_Name, 
                            color = Treatment_Name, shape = Treatment_Name)) +
     geom_point(size = 4) +
     facet_grid(Species ~ metric,
-               labeller = labeller(Species = c("LARA" = "White Mangrove", 
-                                              "RHMA" = "Red Mangrove"))) +
+               labeller = labeller(Species = c("LARA" = "L. racemosa", 
+                                              "RHMA" = "R. mangle"))) +
     scale_color_manual(values = color_vals) +
     scale_shape_manual(values = shape_vals) +
     labs(title = "Normalized Growth Performance Overview",
@@ -2091,11 +2312,11 @@ if(exists("height_summary") & exists("rgr_summary") & exists("branch_summary")) 
 
 ```{r key-findings}
 cat("KEY FINDINGS:\n")
-cat("="*60, "\n\n")
+cat(strrep("=",60), "\n\n")
 
 # Best performers by metric
 cat("TOP PERFORMERS BY METRIC:\n")
-cat("-"*40, "\n")
+cat(strrep("-",40), "\n")
 
 for(sp in unique(rankings$Species)) {
   cat("\n", sp, ":\n", sep = "")
@@ -2132,6 +2353,14 @@ for(sp in unique(rankings$Species)) {
     cat("  Best Nodes: ", top_nodes, "\n")
   }
   
+  # Leaves
+  if("mean_leaves" %in% names(rankings)) {
+    top_leaves <- rankings %>%
+      filter(Species == sp, leaf_rank == 1) %>%
+      pull(Treatment_Name)
+    cat("  Best Leaves: ", top_leaves, "\n")
+  }
+  
   # Overall
   top_overall <- avg_ranks %>%
     filter(Species == sp) %>%
@@ -2142,7 +2371,7 @@ for(sp in unique(rankings$Species)) {
 
 # Sargassum effect on growth
 cat("\n\nSARGASSUM EFFECT ON GROWTH:\n")
-cat("-"*40, "\n")
+cat(strrep("-",40), "\n")
 
 if(exists("height_summary")) {
   sarg_growth <- height_summary %>%
