@@ -344,8 +344,8 @@ p_sarg_effect <- ggplot(treatment_comparison,
   geom_errorbar(aes(ymin = survival_rate - se, ymax = survival_rate + se),
                 width = 0.25) +
   facet_grid(Species ~ Sarg_group, scales = "free_x", space = "free_x",
-             labeller = labeller(Species = c("RHMA" = "Red Mangrove", 
-                                            "LARA" = "White Mangrove"))) +
+             labeller = labeller(Species = c("RHMA" = "R. mangle", 
+                                            "LARA" = "L. racemosa"))) +
   scale_fill_manual(values = color_vals) +
   labs(title = "Survival by Sargassum Presence",
        x = "Treatment",
@@ -680,18 +680,21 @@ p_rhma <- ggsurvplot(
   risk.table.fontsize = 3,
   risk.table.y.text.col = TRUE, risk.table.y.text = FALSE,
   legend.title = "Treatment",
-  title = "RHMA — Kaplan–Meier",
+  title = "R. mangle — Kaplan–Meier",
   palette = "jco"
 )
 
 # 4) Arrange side-by-side with a shared legend at the bottom
-arrange_ggsurvplots(
+kap_meier_plots<-arrange_ggsurvplots(
   list(p_lara, p_rhma),
   ncol = 2, nrow = 1,
   common.legend = TRUE,
   legend = "bottom"
 )
+print(kap_meier_plots)
 
+# Save it as PNG
+ggsave("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\OutputData\\kap-meier-survival-plots.png", plot = kap_meier_plots, width = 18, height = 8, dpi = 500)
 
 ```
 
