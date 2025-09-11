@@ -469,7 +469,7 @@ p_height_box <- ggplot(final_heights,
   scale_fill_manual(values = color_vals) +
   scale_color_manual(values = color_vals) +
   labs(title = "Final Height Distribution of Survivors by Treatment",
-       subtitle = expression(italic("Rhizophora mangle")*": Epicotyl Length | " *italic("Laguncularia racemosa")*": Shoot Height Above Substrate"),
+       subtitle = expression(italic("L. racemosa")*": Shoot height above substrate | " * italic("R. mangle")*": Epicotyl length"),
        x = "Treatment",
        y = "Height (cm)") +
   theme_minimal() +
@@ -703,7 +703,7 @@ if(percent_normal > 80 & levene_result$`Pr(>F)`[1] > 0.05) {
 }
 ```
 
-Height change data does not meet normality or homogeneity of variances even after log transformations. It also has uneven group sizes since not many LARA survived in the end. I will instead run a non-parametric Kruskal Wallis test on each species and follow it up by Dunns test.
+Height change data does not meet normality or homogeneity of variances even after log transformations. It also has uneven group sizes since not many LARA survived in the end. I will instead run a non-parametric Kruskal Wallis test on each species and follow it up by post hoc Dunns test.
 
 The original Growth (Change in Height) Analysis is not to be used; code chunk: height-change-analysis-bad. The height-change-plots code chunk is fine though.
 
