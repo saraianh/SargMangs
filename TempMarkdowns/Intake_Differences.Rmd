@@ -26,6 +26,11 @@ suppressPackageStartupMessages({
   library(emmeans)
   library(car)     # Type II/III Anova; Levene
   library(FSA)     # Dunn's test
+  library(dplyr)
+library(stringr)
+library(tidyr)
+  library(purrr)
+  library(rstatix)
 })
 
 set.seed(20250901)
@@ -35,6 +40,26 @@ if (!dir.exists(params$out_dir)) dir.create(params$out_dir, recursive = TRUE, sh
 
 # Colorblind-friendly palette
 okabe_ito <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#999999")
+
+# Define shapes for each Treatment_Name
+shape_vals <- c(
+  "Soil"                = 0,  # open square
+  "Crushed glass"       = 17, # filled triangle
+  "25% SG"              = 18, # filled diamond
+  "75% SG"              = 8,  # asterisk
+  "100% Sargassum (SG)" = 15  # filled square
+)
+
+# Define colors using okabe_ito palette
+color_vals <- c(
+  "Soil"                = okabe_ito[1], # green  (#009E73)
+  "Crushed glass"       = okabe_ito[6], # blue   (#0072B2)
+  "25% SG"              = okabe_ito[3], # orange (#E69F00)
+  "75% SG"              = okabe_ito[2], # vermillion (#D55E00)
+  "100% Sargassum (SG)" = okabe_ito[7]  # purple (#CC79A7)
+)
+
+
 
 # Robust MDY parser (handles 10/25/24 or 10/25/2024 and with optional times)
 parse_mdy_relaxed <- function(x) suppressWarnings(parse_date_time(x, orders = c("mdy", "mdy HM", "mdy HMS")))
@@ -56,15 +81,31 @@ rhma_raw <- readr::read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Docu
 rhma1 <- rhma_raw %>%
   mutate(
     intake_date = parse_mdy_relaxed(intake_date),
-    collection_date = {cd <- stringr::str_extract(collection_date, "\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b"); parse_mdy_relaxed(cd)},
-    site      = str_squish(as.character(site)),
-    species   = "RHMA",
-    treatment = str_squish(as.character(treatment)),
-    hypo_color = str_squish(as.character(hypo_color)),
-    roots      = str_squish(as.character(roots))
-  )
+    collection_date_raw = as.character(collection_date),
 
-num_cols_rhma <- c("diameter","epi_length","hypo_length","total_height","mass","rhma_height_1","rhma_height_2")
+    # 1) first date-like token (left-to-right)
+    .first = str_extract(collection_date_raw,
+                         "\\b\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?\\b"),
+
+    # 2) append year if missing (use 2024, or use year(intake_date) — see variant below)
+    collection_date_chr = case_when(
+      is.na(.first) ~ NA_character_,
+      str_detect(.first, "^\\d{1,2}/\\d{1,2}$") ~ paste0(.first, "/2024"),
+      TRUE ~ .first
+    ),
+
+    # 3) parse to Date (keeps NA if nothing matched)
+    collection_date = suppressWarnings(mdy(collection_date_chr))
+  ) %>%
+  select(-.first)
+
+# How many still NA after parsing?
+rhma1 %>% summarise(total=n(), parsed=sum(!is.na(collection_date)), na=sum(is.na(collection_date)))
+
+# See examples that still fail to match the mm/dd pattern (if any)
+rhma1 %>% filter(is.na(collection_date)) %>% distinct(collection_date_raw) %>% slice_head(n = 25)
+
+num_cols_rhma <- c("diameter","epi_length","hypo_length","total_height","mass")
 
 rhma2 <- rhma1 %>%
   mutate(across(all_of(num_cols_rhma), ~ suppressWarnings(as.numeric(str_replace_all(.x, ",", ""))))) %>%
@@ -73,6 +114,10 @@ rhma2 <- rhma1 %>%
   group_by(prop_id) %>% slice(1) %>% ungroup()
 
 glimpse(rhma2)
+```
+
+```{r}
+list(rhma_raw$collection_date)
 ```
 
 ## 1.2 QC flags
@@ -104,7 +149,7 @@ rhma_cont_summary <- rhma2 %>%
   summarise(n = sum(!is.na(value)), mean = mean(value, na.rm = TRUE), sd = sd(value, na.rm = TRUE), se = sd/sqrt(n), .groups = "drop") %>%
   mutate(mean_sd = sprintf("%.2f ± %.2f", mean, sd))
 
-knitr::kable(rhma_cont_summary %>% arrange(trait, site, treatment), caption = "RHMA continuous traits: mean ± sd by Site × Treatment")
+knitr::kable(rhma_cont_summary %>% arrange(trait, site, treatment), caption = "R. mangle continuous traits: mean ± sd by Site × Treatment")
 # readr::write_csv(rhma_cont_summary, file.path(params$out_dir, "rhma_continuous_summary_by_site_treatment.csv"))
 ```
 
@@ -124,7 +169,7 @@ check_norm_homo <- function(data, traits, group_vars = c("site","treatment")){
 rhma_assump <- check_norm_homo(rhma2, num_cols_rhma) %>%
   mutate(normality = if_else(shapiro_resid_p < 0.05, "Not normal", "OK"), homogeneity = if_else(levene_p < 0.05, "Unequal var", "OK"))
 
-knitr::kable(rhma_assump, digits = 4, caption = "RHMA: assumption checks")
+knitr::kable(rhma_assump, digits = 4, caption = "R. mangle: assumption checks")
 # readr::write_csv(rhma_assump, file.path(params$out_dir, "rhma_assumption_checks.csv"))
 ```
 
@@ -133,13 +178,13 @@ knitr::kable(rhma_assump, digits = 4, caption = "RHMA: assumption checks")
 
 ### 1.5 Hypothesis tests (auto-switch to Kruskal–Wallis + Dunn when assumptions fail)
 ```{r rhma-tests}
-cont_traits_rhma <- c("diameter","epi_length","hypo_length","total_height","mass","rhma_height_1","rhma_height_2")
+cont_traits_rhma <- c("diameter","epi_length","hypo_length","total_height","mass")
 
 # If any trait violates normality or homogeneity, use nonparametric tests for ALL RHMA traits
 needs_np <- any(rhma_assump$shapiro_resid_p < 0.05 | rhma_assump$levene_p < 0.05, na.rm = TRUE)
 
 if (needs_np) {
-  message("Assumptions violated for RHMA; running nonparametric tests for all RHMA traits.")
+  message("Assumptions violated for R. mangle; running nonparametric tests for all R. mangle traits.")
 
   # Kruskal–Wallis across treatments within each site
   rhma_kw <- purrr::map_dfr(cont_traits_rhma, function(tr){
@@ -172,15 +217,15 @@ if (needs_np) {
 
   # Report tables
   knitr::kable(rhma_kw %>% arrange(trait, site),
-               caption = "RHMA Kruskal–Wallis across treatments within site (all traits)")
+               caption = "R. mangle Kruskal–Wallis across treatments within site (all traits)")
 
   if (nrow(dunn_rhma)) {
     dunn_rhma_sig <- dunn_rhma %>% rename(p_adj = P.adj) %>% filter(!is.na(p_adj) & p_adj < 0.05)
     if (nrow(dunn_rhma_sig) == 0) {
-      knitr::kable(head(dunn_rhma, 10), caption = "RHMA Dunn pairwise (head; none significant after correction)")
+      knitr::kable(head(dunn_rhma, 10), caption = "R. mangle Dunn pairwise (head; none significant after correction)")
     } else {
       knitr::kable(dunn_rhma_sig %>% arrange(trait, site, p_adj),
-                   caption = "RHMA Dunn pairwise: significant contrasts (Bonferroni-adjusted p < 0.05)")
+                   caption = "R. mangle Dunn pairwise: significant contrasts (Bonferroni-adjusted p < 0.05)")
     }
   }
 
@@ -193,14 +238,14 @@ if (needs_np) {
     broom::tidy(anova(fit)) %>% mutate(trait = tr)
   })
   knitr::kable(rhma_anova %>% filter(!is.na(p.value)) %>% select(trait, term, p.value) %>% arrange(trait, term),
-               caption = "RHMA ANOVA (site × treatment)")
+               caption = "R. mangle ANOVA (site × treatment)")
 }
 
 # New: significant contrasts only (Bonferroni p_adj < 0.05)
 dunn_sig <- dunn_rhma %>% rename(p_adj = P.adj) %>% filter(!is.na(p_adj) & p_adj < 0.05)
 if (nrow(dunn_sig) > 0) {
 knitr::kable(dunn_sig %>% arrange(trait, site, p_adj),
-caption = "RHMA Dunn pairwise: significant contrasts (Bonferroni-adjusted p < 0.05)")}
+caption = "R. mangle Dunn pairwise: significant contrasts (Bonferroni-adjusted p < 0.05)")}
 ```
 
 ```{r rhma-dunn-sig}
@@ -214,7 +259,7 @@ arrange(trait, site, p_adj)
 
 # Print one table per trait for readability
 if (nrow(dunn_rhma_sig) == 0) {
-knitr::kable(head(dunn_rhma, 10), caption = "RHMA Dunn pairwise: none significant after Bonferroni; showing head of full results")
+knitr::kable(head(dunn_rhma, 10), caption = "R. mangle Dunn pairwise: none significant after Bonferroni; showing head of full results")
 } else {
 traits_order <- unique(dunn_rhma_sig$trait)
 for (tr in traits_order) {
@@ -227,7 +272,7 @@ cat("
 
 
 ", sep = "")
-print(knitr::kable(sub, caption = paste0("RHMA Dunn significant contrasts (Bonferroni p < 0.05): ", tr)))
+print(knitr::kable(sub, caption = paste0("R. mangle Dunn significant contrasts (Bonferroni p < 0.05): ", tr)))
 }
 }
 }
@@ -241,12 +286,12 @@ print(knitr::kable(sub, caption = paste0("RHMA Dunn significant contrasts (Bonfe
 ## 1.6 Plots
 ```{r rhma-plots}
 p_rhma <- rhma2 %>%
-  pivot_longer(c(total_height, diameter, mass), names_to = "trait", values_to = "value") %>%
+  pivot_longer(c(total_height, epi_length, diameter, mass), names_to = "trait", values_to = "value") %>%
   ggplot(aes(x = treatment, y = value)) +
   geom_boxplot(outlier.alpha = 0.5) +
   geom_jitter(width = 0.15, alpha = 0.4, size = 1) +
   facet_grid(trait ~ site, scales = "free_y") +
-  labs(x = "Treatment", y = "Value", title = "RHMA: intake trait distributions by Treatment (faceted by Site)") +
+  labs(x = "Treatment", y = "Value", title = "R. mangle: Intake trait distributions by Treatment (faceted by Site)") +
   theme_bw(base_size = 12)
 
 p_rhma
@@ -345,7 +390,44 @@ dunn_lara <- map_dfr(cont_traits_lara, function(tr) { df <- lara_intake %>% sele
 
 head(dunn_lara)
 
-knitr::kable(head(kw_lara, 10), caption = "LARA Kruskal–Wallis (first 10 rows)")
+
+# 1) resolve columns & traits actually present
+site_nm  <- intersect(c("site","Site"), names(lara2))[1]
+treat_nm <- intersect(c("treatment","treatment_name","Treatment_Name"), names(lara2))[1]
+stopifnot(!is.na(site_nm), !is.na(treat_nm))
+
+traits <- intersect(cont_traits_lara, names(lara2))
+stopifnot(length(traits) > 0)
+
+# 2) long format
+long <- lara2 %>%
+  select(site = all_of(site_nm),
+         treatment = all_of(treat_nm),
+         all_of(traits)) %>%
+  pivot_longer(cols = all_of(traits), names_to = "trait", values_to = "value") %>%
+  mutate(value = suppressWarnings(as.numeric(value))) %>%
+  drop_na(site, treatment, value)
+
+# 3) keep only (site, trait) groups with ≥3 treatments and ≥2 obs per treatment
+ok_groups <- long %>%
+  count(site, trait, treatment, name = "n") %>%
+  group_by(site, trait) %>%
+  summarise(k = n(), min_n = min(n), .groups = "drop") %>%
+  filter(k >= 3, min_n >= 2)
+
+# 4) Dunn tests by site × trait (Bonferroni)
+dunn_lara <- long %>%
+  semi_join(ok_groups, by = c("site","trait")) %>%
+  group_by(site, trait) %>%
+  dunn_test(value ~ treatment, p.adjust.method = "bonferroni") %>%
+  ungroup()
+
+# Significant only (optional)
+dunn_lara_sig <- dunn_lara %>%
+  filter(p.adj < 0.05) %>%
+  arrange(trait, site, p.adj)
+
+# knitr::kable(head(kw_lara, 10), caption = "LARA Kruskal–Wallis (first 10 rows)")
 knitr::kable(head(dunn_lara, 10), caption = "LARA Dunn pairwise tests (first 10 rows)")
 ```
 
@@ -360,12 +442,12 @@ select(trait, site, comparison, z, p_unadj, p_adj) %>%
 arrange(trait, site, p_adj)
 
 
-if (nrow(lara_dunn_sig) == 0) {
+if (nrow(dunn_lara_sig) == 0) {
 knitr::kable(head(dunn_lara, 10), caption = "LARA Dunn pairwise: none significant after Bonferroni; showing head of full results")
 } else {
-traits_order <- unique(lara_dunn_sig$trait)
+traits_order <- unique(dunn_lara_sig$trait)
 for (tr in traits_order) {
-sub <- lara_dunn_sig %>% filter(trait == tr)
+sub <- dunn_lara_sig %>% filter(trait == tr)
 if (nrow(sub) > 0) {
 cat("
 
@@ -388,12 +470,12 @@ print(knitr::kable(sub, caption = paste0("LARA Dunn significant contrasts (Bonfe
 ## 2.6 Plots
 ```{r lara-plots}
 p_lara <- lara2 %>%
-pivot_longer(c(total_length, prop_length, rad_length, width, mass), names_to = "trait", values_to = "value") %>%
+pivot_longer(c(total_length,width, mass), names_to = "trait", values_to = "value") %>%
 ggplot(aes(x = treatment, y = value)) +
 geom_boxplot(outlier.alpha = 0.5) +
 geom_jitter(width = 0.15, alpha = 0.4, size = 1) +
 facet_grid(trait ~ site, scales = "free_y") +
-labs(x = "Treatment", y = "Value", title = "LARA: Intake traits by Treatment (Kruskal–Wallis/Dunn)") +
+labs(x = "Treatment", y = "Value", title = "L. racemosa: Intake traits by Treatment (Dunn)") +
 theme_bw(base_size = 12)
 
 
