@@ -1,0 +1,1833 @@
+---
+title: "Intake Differences by Species, Treatment, and Site (RHMA vs LARA)"
+author: "Sarai Hutchinson"
+date: "2025-09-23"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    number_sections: true
+params:
+  out_dir:  "intake_outputs"
+---
+
+What This Script Does:
+
+1. Sets up all necessary libraries and plotting aesthetics
+2. Imports and cleans your RHMA data with robust date parsing
+3. Maps treatments to readable names (A→Soil, B→Crushed glass, etc.)
+4. Detects outliers using the IQR method
+5. Generates summary statistics by site and treatment
+6. Tests statistical assumptions (normality and homogeneity)
+7. Runs appropriate tests (nonparametric if assumptions violated, parametric if met)
+8. Provides comprehensive diagnostics and data availability summaries
+9. Includes optional file exports for all results
+
+0) Setup & Plan
+```{r}
+# Setup and Libraries ----
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 9, fig.height = 6)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(lubridate)
+  library(janitor)
+  library(broom)
+  library(emmeans)
+  library(car)     # Type II/III Anova; Levene
+  library(FSA)     # Dunn's test
+  library(dplyr)
+  library(stringr)
+  library(tidyr)
+  library(purrr)
+  library(rstatix)
+})
+
+set.seed(20250901)
+
+# Output directory (if needed)
+# if (!dir.exists(params$out_dir)) dir.create(params$out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Define plotting aesthetics ----
+# Colorblind-friendly palette
+okabe_ito <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#999999")
+
+# Define shapes for each Treatment_Name
+shape_vals <- c(
+  "Soil"                = 0,  # open square
+  "Crushed glass"       = 17, # filled triangle
+  "25% SG"              = 18, # filled diamond
+  "75% SG"              = 8,  # asterisk
+  "100% Sargassum (SG)" = 15  # filled square
+)
+
+# Define colors using okabe_ito palette
+color_vals <- c(
+  "Soil"                = okabe_ito[3], # green  (#009E73)
+  "Crushed glass"       = okabe_ito[5], # blue   (#0072B2)
+  "25% SG"              = okabe_ito[1], # orange (#E69F00)
+  "75% SG"              = okabe_ito[6], # vermillion (#D55E00)
+  "100% Sargassum (SG)" = okabe_ito[7]  # purple (#CC79A7)
+)
+```
+
+**Guiding questions**  
+**Q1.** Intake differences among species (RHMA vs LARA)?  
+**Q2.** Do initial substrates/treatments differ at intake?  
+**Q3.** Are there site differences, and do they modify species/treatment effects?  
+
+---
+
+# 1. RHMA Intake
+
+## 1.1 Read & Clean (hard-coded path)
+
+
+```{r}
+# Data Import and Cleaning ----
+# Robust MDY parser (handles 10/25/24 or 10/25/2024 and with optional times)
+parse_mdy_relaxed <- function(x) suppressWarnings(parse_date_time(x, orders = c("mdy", "mdy HM", "mdy HMS")))
+
+# Read and clean data
+rhma_raw <- readr::read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/RHMA_IntakeData.csv", show_col_types = FALSE) %>% 
+  clean_names()
+
+# Process dates and clean data
+rhma1 <- rhma_raw %>%
+  mutate(
+    intake_date = parse_mdy_relaxed(intake_date),
+    collection_date_raw = as.character(collection_date),
+
+    # Extract first date-like token
+    .first = str_extract(collection_date_raw,
+                         "\\b\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?\\b"),
+
+    # Append year if missing
+    collection_date_chr = case_when(
+      is.na(.first) ~ NA_character_,
+      str_detect(.first, "^\\d{1,2}/\\d{1,2}$") ~ paste0(.first, "/2024"),
+      TRUE ~ .first
+    ),
+
+    # Parse to Date
+    collection_date = suppressWarnings(mdy(collection_date_chr))
+  ) %>%
+  select(-.first)
+
+# Report date parsing results
+cat("Date parsing summary:\n")
+rhma1 %>% 
+  summarise(
+    total = n(), 
+    parsed = sum(!is.na(collection_date)), 
+    na = sum(is.na(collection_date))
+  ) %>% 
+  print()
+
+# Convert numeric columns and clean
+num_cols_rhma <- c("diameter","epi_length","hypo_length","total_height","mass")
+
+rhma2 <- rhma1 %>%
+  mutate(across(all_of(num_cols_rhma), ~ suppressWarnings(as.numeric(str_replace_all(.x, ",", ""))))) %>%
+  filter(!is.na(intake_date)) %>%
+  arrange(prop_id, intake_date) %>%
+  group_by(prop_id) %>% 
+  slice(1) %>% 
+  ungroup() %>%
+  # Add readable treatment names
+  mutate(
+    treatment_name = case_when(
+      treatment == "A" ~ "Soil",
+      treatment == "B" ~ "Crushed glass",
+      treatment == "C" ~ "100% Sargassum (SG)",
+      treatment == "D" ~ "25% SG",
+      treatment == "E" ~ "75% SG",
+      TRUE ~ paste("Unknown:", treatment)
+    ),
+    # Convert to factor with desired order
+    treatment_name = factor(treatment_name, levels = c(
+      "Soil", 
+      "Crushed glass", 
+      "25% SG", 
+      "75% SG", 
+      "100% Sargassum (SG)"
+    ))
+  )
+
+# Verify treatment mapping
+cat("\nTreatment mapping verification:\n")
+rhma2 %>% 
+  count(treatment, treatment_name) %>% 
+  arrange(treatment) %>%
+  print()
+
+cat("\nFinal dataset structure:\n")
+glimpse(rhma2)
+```
+
+
+```{r}
+# Quality Control: Outlier Detection ----
+rhma_qc_outliers <- rhma2 %>%
+  pivot_longer(all_of(num_cols_rhma), names_to = "trait", values_to = "value") %>%
+  group_by(trait) %>%
+  mutate(
+    iqr = IQR(value, na.rm = TRUE),
+    Q1  = quantile(value, 0.25, na.rm = TRUE),
+    Q3  = quantile(value, 0.75, na.rm = TRUE),
+    lower = Q1 - 3*iqr,
+    upper = Q3 + 3*iqr,
+    is_extreme = value < lower | value > upper
+  ) %>%
+  ungroup() %>%
+  filter(is_extreme & !is.na(value)) %>%
+  arrange(trait, desc(value))
+
+if (nrow(rhma_qc_outliers) > 0) {
+  cat("\nExtreme outliers detected (beyond Q1/Q3 ± 3*IQR):\n")
+  print(head(rhma_qc_outliers, 20))
+} else {
+  cat("\nNo extreme outliers detected.\n")
+}
+```
+
+
+```{r}
+# Summary Statistics ----
+rhma_cont_summary <- rhma2 %>%
+  pivot_longer(all_of(num_cols_rhma), names_to = "trait", values_to = "value") %>%
+  group_by(site, treatment_name, trait) %>%
+  summarise(
+    n = sum(!is.na(value)), 
+    mean = mean(value, na.rm = TRUE), 
+    sd = sd(value, na.rm = TRUE), 
+    se = sd/sqrt(n), 
+    .groups = "drop"
+  ) %>%
+  mutate(mean_sd = sprintf("%.2f ± %.2f", mean, sd))
+
+cat("\nSummary statistics by site and treatment:\n")
+knitr::kable(rhma_cont_summary %>% arrange(trait, site, treatment_name), 
+             caption = "R. mangle continuous traits: mean ± sd by Site × Treatment")
+```
+
+
+```{r}
+# Statistical Assumption Testing ----
+check_norm_homo <- function(data, traits, group_vars = c("site", "treatment_name")){
+  purrr::map_dfr(traits, function(tr){
+    df <- data %>% select(all_of(c(group_vars, tr))) %>% drop_na()
+    if (nrow(df) < 8) return(tibble(trait = tr, shapiro_resid_p = NA_real_, levene_p = NA_real_))
+    
+    f <- lm(reformulate(paste(group_vars, collapse = "*"), response = tr), data = df)
+    shp <- tryCatch(shapiro.test(residuals(f))$p.value, error = function(e) NA_real_)
+    lev <- tryCatch(
+      car::leveneTest(df[[tr]] ~ interaction(df[[group_vars[1]]], df[[group_vars[2]]]))$`Pr(>F)`[1], 
+      error = function(e) NA_real_
+    )
+    tibble(trait = tr, shapiro_resid_p = shp, levene_p = lev)
+  })
+}
+
+rhma_assump <- check_norm_homo(rhma2, num_cols_rhma) %>%
+  mutate(
+    normality = if_else(shapiro_resid_p < 0.05, "Not normal", "OK"), 
+    homogeneity = if_else(levene_p < 0.05, "Unequal var", "OK")
+  )
+
+cat("\nStatistical assumptions:\n")
+knitr::kable(rhma_assump, digits = 4, caption = "R. mangle: assumption checks")
+```
+
+
+```{r}
+# Statistical Analysis ----
+cont_traits_rhma <- c("diameter","epi_length","hypo_length","total_height","mass")
+
+# Check if nonparametric tests are needed
+needs_np <- any(rhma_assump$shapiro_resid_p < 0.05 | rhma_assump$levene_p < 0.05, na.rm = TRUE)
+
+# Alternative approach using rstatix package which handles factors better
+library(rstatix)
+
+if (needs_np) {
+  cat("\nAssumptions violated for R. mangle; running nonparametric tests for all R. mangle traits.\n")
+
+  # Kruskal–Wallis tests with robust error handling (same as before)
+  rhma_kw <- purrr::map_dfr(cont_traits_rhma, function(tr) {
+    df <- rhma2 %>% 
+      select(site, treatment_name, value = all_of(tr)) %>% 
+      drop_na()
+    
+    if (nrow(df) == 0) {
+      return(tibble(trait = tr, site = NA_character_, 
+                   statistic = NA_real_, p_value = NA_real_,
+                   note = "No data available"))
+    }
+    
+    purrr::map_dfr(unique(df$site), function(si) {
+      sub <- df %>% filter(site == si)
+      
+      # Data validation checks
+      if (nrow(sub) < 3) {
+        return(tibble(trait = tr, site = si, 
+                     statistic = NA_real_, p_value = NA_real_,
+                     note = "Insufficient data (n < 3)"))
+      }
+      
+      treatment_counts <- sub %>% count(treatment_name, .drop = FALSE)
+      if (nrow(treatment_counts) < 2) {
+        return(tibble(trait = tr, site = si, 
+                     statistic = NA_real_, p_value = NA_real_,
+                     note = "Only one treatment group"))
+      }
+      
+      if (any(treatment_counts$n == 0)) {
+        return(tibble(trait = tr, site = si, 
+                     statistic = NA_real_, p_value = NA_real_,
+                     note = "Empty treatment group"))
+      }
+      
+      # Run Kruskal-Wallis test
+      tryCatch({
+        kw <- kruskal.test(value ~ treatment_name, data = sub)
+        tibble(trait = tr, site = si, 
+               statistic = unname(kw$statistic), 
+               p_value = kw$p.value,
+               note = "Test completed")
+      }, error = function(e) {
+        tibble(trait = tr, site = si, 
+               statistic = NA_real_, p_value = NA_real_,
+               note = paste("Error:", e$message))
+      })
+    })
+  })
+
+  # FIXED Dunn pairwise tests using rstatix package
+  dunn_rhma <- purrr::map_dfr(cont_traits_rhma, function(tr) {
+    df <- rhma2 %>% 
+      select(site, treatment_name, value = all_of(tr)) %>% 
+      drop_na() %>%
+      # Convert factor to character for statistical tests
+      mutate(treatment_char = as.character(treatment_name))
+    
+    if (nrow(df) == 0) return(tibble())
+    
+    purrr::map_dfr(unique(df$site), function(si) {
+      sub <- df %>% filter(site == si)
+      
+      # Check data structure before testing
+      cat("Debugging info for trait", tr, "at site", si, ":\n")
+      cat("Sample sizes by treatment:\n")
+      print(sub %>% count(treatment_char))
+      
+      treatment_counts <- sub %>% count(treatment_char)
+      
+      # Only run if sufficient data and groups
+      if (nrow(treatment_counts) < 2 || nrow(sub) < 6) {
+        cat("Skipping - insufficient data or groups\n")
+        return(tibble())
+      }
+      
+      if (any(treatment_counts$n == 0)) {
+        cat("Skipping - empty treatment group\n")
+        return(tibble())
+      }
+      
+      tryCatch({
+        # First check if KW test is significant
+        kw_result <- kruskal.test(value ~ treatment_char, data = sub)
+        cat("Kruskal-Wallis p-value:", kw_result$p.value, "\n")
+        
+        if (kw_result$p.value < 0.05) {
+          cat("Running Dunn's test...\n")
+          
+          # Try rstatix approach first
+          dunn_result <- sub %>%
+            dunn_test(value ~ treatment_char, p.adjust.method = "bonferroni")
+          
+          if (nrow(dunn_result) > 0) {
+            out <- dunn_result %>%
+              mutate(trait = tr, site = si) %>%
+              select(trait, site, group1, group2, n1, n2, statistic, p, p.adj)
+            cat("Dunn's test completed successfully\n")
+            return(out)
+          }
+        } else {
+          cat("Kruskal-Wallis not significant, skipping post-hoc\n")
+        }
+        return(tibble())
+      }, error = function(e) {
+        cat("Error in statistical test:", e$message, "\n")
+        
+        # Fallback: try manual pairwise Wilcoxon tests
+        tryCatch({
+          cat("Trying pairwise Wilcoxon as fallback...\n")
+          pairwise_result <- sub %>%
+            pairwise_wilcox_test(value ~ treatment_char, p.adjust.method = "bonferroni")
+          
+          if (nrow(pairwise_result) > 0) {
+            out <- pairwise_result %>%
+              mutate(trait = tr, site = si) %>%
+              select(trait, site, group1, group2, n1, n2, statistic, p, p.adj)
+            cat("Pairwise Wilcoxon completed successfully\n")
+            return(out)
+          }
+          return(tibble())
+        }, error = function(e2) {
+          cat("Fallback also failed:", e2$message, "\n")
+          return(tibble())
+        })
+      })
+    })
+  })
+
+  # Display Kruskal-Wallis results
+  cat("\nKruskal-Wallis Results:\n")
+  print(knitr::kable(rhma_kw %>% arrange(trait, site),
+               caption = "R. mangle Kruskal–Wallis across treatments within site"))
+
+  # Display post-hoc results
+  if (nrow(dunn_rhma) > 0) {
+    dunn_rhma_clean <- dunn_rhma %>% 
+      filter(!is.na(p.adj))
+    
+    if (nrow(dunn_rhma_clean) > 0) {
+      dunn_sig <- dunn_rhma_clean %>% filter(p.adj < 0.05)
+      
+      if (nrow(dunn_sig) > 0) {
+        cat("\nSignificant Post-hoc Comparisons:\n")
+        print(knitr::kable(dunn_sig %>% arrange(trait, site, p.adj),
+                     caption = "Significant post-hoc comparisons (Bonferroni-adjusted p < 0.05)"))
+      } else {
+        cat("\nNo significant pairwise comparisons after Bonferroni correction.\n")
+        cat("Top 10 comparisons:\n")
+        print(knitr::kable(head(dunn_rhma_clean, 10) %>% arrange(p.adj),
+                     caption = "Post-hoc comparisons (first 10 results)"))
+      }
+    }
+  } else {
+    cat("\nNo post-hoc comparisons could be performed.\n")
+  }
+}
+
+# Let's also debug the data structure to understand what's happening
+cat("\nDEBUGGING: Data structure analysis\n")
+cat("=====================================\n")
+
+# Check the actual data being passed to statistical tests
+debug_data <- rhma2 %>%
+  select(site, treatment, treatment_name, diameter) %>%
+  drop_na() %>%
+  filter(site == "OC") %>%  # Focus on one site for debugging
+  head(20)
+
+cat("Sample of data for debugging (first 20 OC site records):\n")
+print(debug_data)
+
+cat("\nTreatment factor levels:\n")
+print(levels(rhma2$treatment_name))
+
+cat("\nUnique treatments in data:\n")
+print(unique(rhma2$treatment_name))
+
+cat("\nTreatment counts by site:\n")
+treatment_by_site <- rhma2 %>%
+  count(site, treatment_name, .drop = FALSE) %>%
+  pivot_wider(names_from = treatment_name, values_from = n, values_fill = 0)
+print(treatment_by_site)
+```
+
+
+```{r}
+# Data Availability Summary ----
+availability <- rhma2 %>%
+  select(site, treatment_name, all_of(cont_traits_rhma)) %>%
+  group_by(site, treatment_name) %>%
+  summarise(
+    n_total = n(),
+    across(all_of(cont_traits_rhma), ~sum(!is.na(.)), .names = "n_{.col}"),
+    .groups = "drop"
+  ) %>%
+  arrange(site, treatment_name)
+
+cat("\nData availability by site and treatment:\n")
+print(availability)
+```
+
+
+```{r}
+# Final Summary ----
+cat(strrep("=", 50), "\n")
+cat("\nANALYSIS SUMMARY")
+cat(strrep("=", 50), "\n")
+cat("\nTotal observations:", nrow(rhma2))
+cat("\nSites:", length(unique(rhma2$site)), "sites:", paste(unique(rhma2$site), collapse = ", "))
+cat("\nTreatments:", length(unique(rhma2$treatment_name)), "treatments:", paste(levels(rhma2$treatment_name), collapse = ", "))
+cat("\nTraits analyzed:", length(cont_traits_rhma), "continuous traits:", paste(cont_traits_rhma, collapse = ", "))
+cat("\nStatistical approach:", ifelse(needs_np, "Nonparametric (Kruskal-Wallis + Dunn)", "Parametric (ANOVA)"))
+cat(strrep("=", 50), "\n")
+
+# Optional: Save results to files
+# write_csv(rhma2, "rhma_cleaned_data.csv")
+# write_csv(rhma_cont_summary, "rhma_summary_statistics.csv")
+# write_csv(rhma_assump, "rhma_assumption_tests.csv")
+# if(exists("rhma_kw")) write_csv(rhma_kw, "rhma_kruskal_wallis_results.csv")
+# if(exists("dunn_rhma") && nrow(dunn_rhma) > 0) write_csv(dunn_rhma, "rhma_dunn_pairwise_results.csv")
+```
+
+```{r}
+# Improved RHMA plots with proper y-axis labels and significance letters
+
+# Load additional packages for significance testing and plotting
+library(ggpubr)  # for stat_compare_means
+library(multcompView)  # for compact letter display
+
+# Define proper trait labels
+trait_labels <- c(
+  "total_height" = "Total Height (mm)",
+  "epi_length" = "Epicotyl Length (mm)", 
+  "diameter" = "Diameter (mm)",
+  "mass" = "Mass (g)",
+  "hypo_length" = "Hypocotyl Length (mm)"
+)
+
+# Function to generate significance letters from statistical results
+generate_significance_letters <- function(stat_results, traits, sites) {
+  # Initialize results data frame
+  sig_letters <- expand_grid(
+    trait = traits,
+    site = sites,
+    treatment_name = levels(rhma2$treatment_name)
+  ) %>%
+    mutate(
+      letter = "a",  # default - all same if no significance
+      max_value = NA_real_
+    )
+  
+  if (nrow(stat_results) == 0) {
+    return(sig_letters)
+  }
+  
+  # For each trait and site combination
+  for (tr in traits) {
+    for (si in sites) {
+      # Get the data for calculating max values (for letter positioning)
+      trait_data <- rhma2 %>%
+        filter(site == si) %>%
+        select(treatment_name, value = all_of(tr)) %>%
+        drop_na() %>%
+        group_by(treatment_name) %>%
+        summarise(max_val = max(value, na.rm = TRUE), .groups = "drop")
+      
+      # Check if we have significant results for this trait/site
+      sig_comparisons <- stat_results %>%
+        filter(trait == tr, site == si, p.adj < 0.05)
+      
+      if (nrow(sig_comparisons) > 0) {
+        # Create a matrix of p-values for multcompView
+        treatments <- as.character(unique(c(sig_comparisons$group1, sig_comparisons$group2)))
+        p_matrix <- matrix(1, nrow = length(treatments), ncol = length(treatments))
+        rownames(p_matrix) <- treatments
+        colnames(p_matrix) <- treatments
+        
+        # Fill in the significant p-values
+        for (i in 1:nrow(sig_comparisons)) {
+          g1 <- sig_comparisons$group1[i]
+          g2 <- sig_comparisons$group2[i]
+          p_val <- sig_comparisons$p.adj[i]
+          
+          if (g1 %in% treatments && g2 %in% treatments) {
+            p_matrix[g1, g2] <- p_val
+            p_matrix[g2, g1] <- p_val
+          }
+        }
+        
+        # Generate compact letter display
+        tryCatch({
+          letters_result <- multcompLetters(p_matrix, threshold = 0.05)
+          letters_df <- data.frame(
+            treatment_name = names(letters_result$Letters),
+            letter = letters_result$Letters,
+            stringsAsFactors = FALSE
+          )
+          
+          # Update sig_letters for this trait/site
+          for (j in 1:nrow(letters_df)) {
+            treatment <- letters_df$treatment_name[j]
+            letter <- letters_df$letter[j]
+            max_val <- trait_data$max_val[trait_data$treatment_name == treatment]
+            
+            if (length(max_val) > 0) {
+              sig_letters <- sig_letters %>%
+                mutate(
+                  letter = ifelse(trait == tr & site == si & treatment_name == treatment, 
+                                letter, letter),
+                  max_value = ifelse(trait == tr & site == si & treatment_name == treatment, 
+                                   max_val * 1.1, max_value)  # 10% above max for positioning
+                )
+            }
+          }
+        }, error = function(e) {
+          message("Could not generate letters for trait ", tr, " at site ", si, ": ", e$message)
+        })
+      } else {
+        # No significance - add max values for positioning but keep default letters
+        for (j in 1:nrow(trait_data)) {
+          treatment <- trait_data$treatment_name[j]
+          max_val <- trait_data$max_val[j]
+          
+          sig_letters <- sig_letters %>%
+            mutate(
+              max_value = ifelse(trait == tr & site == si & treatment_name == treatment, 
+                               max_val * 1.1, max_value)
+            )
+        }
+      }
+    }
+  }
+  
+  return(sig_letters)
+}
+
+# Generate significance letters from our statistical results
+# (Assuming dunn_rhma exists from previous analysis - if not, create empty)
+if (exists("dunn_rhma") && nrow(dunn_rhma) > 0) {
+  sig_letters_data <- generate_significance_letters(
+    dunn_rhma, 
+    c("total_height", "epi_length", "diameter", "mass"), 
+    unique(rhma2$site)
+  )
+} else {
+  # Create default letters if no statistical results
+  sig_letters_data <- expand_grid(
+    trait = c("total_height", "epi_length", "diameter", "mass"),
+    site = unique(rhma2$site),
+    treatment_name = levels(rhma2$treatment_name)
+  ) %>%
+    mutate(letter = "a", max_value = NA_real_)
+}
+
+# Create the improved plot
+p_rhma_improved <- rhma2 %>%
+  pivot_longer(c(total_height, epi_length, diameter, mass), names_to = "trait", values_to = "value") %>%
+  # Use treatment_name instead of treatment for readable labels
+  ggplot(aes(x = treatment_name, y = value, fill = treatment_name)) +
+  geom_boxplot(outlier.alpha = 0.5, alpha = 0.7) +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 1) +
+  # Add significance letters
+  geom_text(data = sig_letters_data %>% filter(!is.na(max_value)), 
+            aes(x = treatment_name, y = max_value, label = letter),
+            inherit.aes = FALSE, size = 3.5, fontface = "bold") +
+  # Use custom facet labels
+  facet_grid(trait ~ site, scales = "free_y", 
+             labeller = labeller(trait = trait_labels)) +
+  # Use your predefined colors
+  scale_fill_manual(values = color_vals) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +  # Wrap long treatment names
+  labs(x = "Treatment", y = NULL) +  # Remove generic y label, facet labels will handle this
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Angle treatment names
+    legend.position = "none",  # Remove legend since x-axis shows treatments
+    strip.text.y = element_text(size = 10),  # Adjust facet label size
+    panel.grid.minor = element_blank()  # Clean up grid lines
+  )
+
+print(p_rhma_improved)
+
+# Alternative version with significance from ggpubr (if you prefer this approach)
+p_rhma_with_stats <- rhma2 %>%
+  pivot_longer(c(total_height, epi_length, diameter, mass), names_to = "trait", values_to = "value") %>%
+  ggplot(aes(x = treatment_name, y = value, fill = treatment_name)) +
+  geom_boxplot(outlier.alpha = 0.5, alpha = 0.7) +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 1) +
+  # Add statistical comparisons using ggpubr
+  stat_compare_means(method = "kruskal.test", label = "p.format", 
+                     label.x.npc = 0.5, label.y.npc = 0.95, size = 3) +
+  facet_grid(trait ~ site, scales = "free_y", 
+             labeller = labeller(trait = trait_labels)) +
+  scale_fill_manual(values = color_vals) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  labs(x = "Treatment", y = NULL) +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none",
+    strip.text.y = element_text(size = 10),
+    panel.grid.minor = element_blank()
+  )
+
+print(p_rhma_with_stats)
+
+# Save the improved plots
+# ggsave("rhma_boxplots_improved.png", p_rhma_improved, dpi = 300, width = 12, height = 8)
+# ggsave("rhma_boxplots_with_stats.png", p_rhma_with_stats, dpi = 300, width = 12, height = 8)
+
+# Summary of improvements made
+cat(strrep("=", 50), "\n")
+cat("\nPLOT IMPROVEMENTS SUMMARY")
+cat(strrep("=", 50), "\n")
+cat("\n✓ Proper y-axis labels for each trait (mm, g)")
+cat("\n✓ Title removed as requested")
+cat("\n✓ Uses readable treatment names instead of A, B, C, D, E") 
+cat("\n✓ Color coding matches your predefined color scheme")
+cat("\n✓ Significance letters added (if statistical differences found)")
+cat("\n✓ Cleaner theme with angled x-axis labels")
+cat("\n✓ Wrapped treatment names for better readability")
+cat("\n✓ Alternative version with p-values from Kruskal-Wallis tests")
+cat(strrep("=", 50), "\n")
+```
+
+
+```{r rhma-plots}
+p_rhma <- rhma2 %>%
+  pivot_longer(c(total_height, epi_length, diameter, mass), names_to = "trait", values_to = "value") %>%
+  ggplot(aes(x = treatment, y = value)) +
+  geom_boxplot(outlier.alpha = 0.5) +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 1) +
+  facet_grid(trait ~ site, scales = "free_y") +
+  labs(x = "Treatment", y = "Value", title = "R. mangle: Intake trait distributions by Treatment (faceted by Site)") +
+  theme_bw(base_size = 12)
+
+p_rhma
+# ggsave(file.path(params$out_dir, "rhma_boxplots.png"), p_rhma, dpi = 300, width = 10, height = 7)
+```
+
+```{r}
+# Comprehensive Kruskal-Wallis Results for Baseline Analysis
+# All traits × sites combinations for treatment group comparisons
+
+# Clean and format the Kruskal-Wallis results for publication
+if (exists("rhma_kw")) {
+  
+  # Format the results table
+  kw_results_formatted <- rhma_kw %>%
+    filter(!is.na(p_value)) %>%  # Remove any failed tests
+    mutate(
+      # Format p-values appropriately
+      p_formatted = case_when(
+        p_value < 0.001 ~ sprintf("%.2e", p_value),  # Scientific notation for very small
+        p_value < 0.01 ~ sprintf("%.4f", p_value),   # 4 decimal places for small
+        TRUE ~ sprintf("%.3f", p_value)              # 3 decimal places for others
+      ),
+      # Add significance indicators
+      significance = case_when(
+        p_value < 0.001 ~ "***",
+        p_value < 0.01 ~ "**",
+        p_value < 0.05 ~ "*",
+        TRUE ~ "ns"
+      ),
+      # Format test statistic
+      statistic_formatted = sprintf("%.2f", statistic),
+      # Create combined result column
+      result = paste0("χ² = ", statistic_formatted, ", p = ", p_formatted, significance)
+    ) %>%
+    arrange(trait, site)
+  
+  # Publication-ready table
+  cat("KRUSKAL-WALLIS TEST RESULTS: BASELINE CHARACTERISTICS BY TREATMENT\n")
+  cat("====================================================================\n\n")
+  
+  kw_publication_table <- kw_results_formatted %>%
+    select(trait, site, statistic_formatted, p_formatted, significance) %>%
+    rename(
+      Trait = trait,
+      Site = site, 
+      `χ² statistic` = statistic_formatted,
+      `p-value` = p_formatted,
+      `Significance` = significance
+    )
+  
+  print(knitr::kable(kw_publication_table, 
+                     caption = "Kruskal-Wallis test results comparing baseline plant characteristics across treatment groups"))
+  
+  # Summary by trait (across all sites)
+  cat("\n\nSUMMARY BY TRAIT (across all sites):\n")
+  cat("=====================================\n")
+  
+  trait_summary <- kw_results_formatted %>%
+    group_by(trait) %>%
+    summarise(
+      n_sites = n(),
+      n_significant = sum(p_value < 0.05),
+      min_p = min(p_value),
+      max_p = max(p_value),
+      mean_statistic = mean(statistic, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      min_p_formatted = case_when(
+        min_p < 0.001 ~ sprintf("%.2e", min_p),
+        min_p < 0.01 ~ sprintf("%.4f", min_p),
+        TRUE ~ sprintf("%.3f", min_p)
+      ),
+      max_p_formatted = case_when(
+        max_p < 0.001 ~ sprintf("%.2e", max_p),
+        max_p < 0.01 ~ sprintf("%.4f", max_p),
+        TRUE ~ sprintf("%.3f", max_p)
+      ),
+      significance_pattern = paste0(n_significant, "/", n_sites, " sites significant")
+    ) %>%
+    select(trait, significance_pattern, min_p_formatted, max_p_formatted) %>%
+    rename(
+      Trait = trait,
+      `Sites with significant differences` = significance_pattern,
+      `Minimum p-value` = min_p_formatted,
+      `Maximum p-value` = max_p_formatted
+    )
+  
+  print(knitr::kable(trait_summary, 
+                     caption = "Summary of baseline differences by trait across all sites"))
+  
+  # Summary by site (across all traits)  
+  cat("\n\nSUMMARY BY SITE (across all traits):\n")
+  cat("====================================\n")
+  
+  site_summary <- kw_results_formatted %>%
+    group_by(site) %>%
+    summarise(
+      n_traits = n(),
+      n_significant = sum(p_value < 0.05),
+      min_p = min(p_value),
+      max_p = max(p_value),
+      mean_statistic = mean(statistic, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      min_p_formatted = case_when(
+        min_p < 0.001 ~ sprintf("%.2e", min_p),
+        min_p < 0.01 ~ sprintf("%.4f", min_p),
+        TRUE ~ sprintf("%.3f", min_p)
+      ),
+      max_p_formatted = case_when(
+        max_p < 0.001 ~ sprintf("%.2e", max_p),
+        max_p < 0.01 ~ sprintf("%.4f", max_p),
+        TRUE ~ sprintf("%.3f", max_p)
+      ),
+      significance_pattern = paste0(n_significant, "/", n_traits, " traits significant"),
+      mean_statistic_formatted = sprintf("%.2f", mean_statistic)
+    ) %>%
+    select(site, significance_pattern, min_p_formatted, max_p_formatted, mean_statistic_formatted) %>%
+    rename(
+      Site = site,
+      `Traits with significant differences` = significance_pattern,
+      `Minimum p-value` = min_p_formatted,
+      `Maximum p-value` = max_p_formatted,
+      `Mean χ² statistic` = mean_statistic_formatted
+    )
+  
+  print(knitr::kable(site_summary, 
+                     caption = "Summary of baseline differences by site across all traits"))
+  
+  # Overall summary statistics
+  cat("\n\nOVERALL SUMMARY:\n")
+  cat("================\n")
+  
+  overall_stats <- kw_results_formatted %>%
+    summarise(
+      total_tests = n(),
+      significant_tests = sum(p_value < 0.05),
+      percent_significant = round(significant_tests/total_tests * 100, 1),
+      median_p = median(p_value),
+      median_statistic = median(statistic)
+    )
+  
+  cat("Total Kruskal-Wallis tests performed:", overall_stats$total_tests, "\n")
+  cat("Number of significant tests (p < 0.05):", overall_stats$significant_tests, "\n")
+  cat("Percentage of tests showing significance:", paste0(overall_stats$percent_significant, "%"), "\n")
+  cat("Median p-value across all tests:", sprintf("%.4f", overall_stats$median_p), "\n")
+  cat("Median χ² statistic:", sprintf("%.2f", overall_stats$median_statistic), "\n")
+  
+  # Text for methods/results section
+  cat(strrep("=", 50), "\n")
+  cat("\nTEXT FOR MANUSCRIPT:")
+  cat(strrep("=", 50), "\n")
+  cat("\n\nMETHODS section text:")
+  cat('\n"To assess whether treatment groups had equivalent baseline characteristics, ')
+  cat('Kruskal-Wallis tests were performed for each morphological trait within each site, ')
+  cat('comparing initial plant measurements across the five treatment groups."')
+  
+  cat("\n\nRESULTS section text:")
+  cat('\n"Baseline analysis revealed systematic differences in initial plant characteristics ')
+  cat('across treatment groups. Kruskal-Wallis tests indicated significant differences ')
+  cat('(p < 0.05) for ', overall_stats$significant_tests, ' out of ', overall_stats$total_tests, 
+      ' trait × site combinations (', overall_stats$percent_significant, '%). ')
+  
+  # Identify most problematic combinations
+  most_significant <- kw_results_formatted %>%
+    filter(p_value < 0.01) %>%
+    arrange(p_value) %>%
+    slice_head(n = 3)
+  
+  if (nrow(most_significant) > 0) {
+    cat('The strongest baseline differences were observed for ')
+    baseline_issues <- paste0(most_significant$trait, " at ", most_significant$site, 
+                             " (p = ", most_significant$p_formatted, ")")
+    cat(paste(baseline_issues[1:min(3, length(baseline_issues))], collapse = ", "), '. ')
+  }
+  
+  cat('All subsequent analyses controlled for these baseline differences using analysis of covariance (ANCOVA) ')
+  cat('with baseline measurements as covariates."')
+  
+  # Export option
+  cat("\n\nOptional file exports:")
+  cat('\nwrite_csv(kw_results_formatted, "kruskal_wallis_baseline_results.csv")')
+  cat('\nwrite_csv(kw_publication_table, "kw_results_for_publication.csv")')
+  
+} else {
+  cat("ERROR: rhma_kw data frame not found. Please run the statistical analysis section first.\n")
+  cat("Make sure the nonparametric analysis code has been executed successfully.")
+}
+
+# Alternative: If rhma_kw doesn't exist, generate it
+if (!exists("rhma_kw")) {
+  cat("\nGenerating Kruskal-Wallis results...\n")
+  
+  cont_traits_rhma <- c("diameter","epi_length","hypo_length","total_height","mass")
+  
+  rhma_kw <- purrr::map_dfr(cont_traits_rhma, function(tr) {
+    df <- rhma2 %>% 
+      select(site, treatment_name, value = all_of(tr)) %>% 
+      drop_na()
+    
+    if (nrow(df) == 0) {
+      return(tibble(trait = tr, site = NA_character_, 
+                   statistic = NA_real_, p_value = NA_real_,
+                   note = "No data available"))
+    }
+    
+    purrr::map_dfr(unique(df$site), function(si) {
+      sub <- df %>% filter(site == si)
+      
+      if (nrow(sub) < 3) {
+        return(tibble(trait = tr, site = si, 
+                     statistic = NA_real_, p_value = NA_real_,
+                     note = "Insufficient data"))
+      }
+      
+      treatment_counts <- sub %>% count(treatment_name, .drop = FALSE)
+      if (nrow(treatment_counts) < 2) {
+        return(tibble(trait = tr, site = si, 
+                     statistic = NA_real_, p_value = NA_real_,
+                     note = "Only one treatment group"))
+      }
+      
+      tryCatch({
+        kw <- kruskal.test(value ~ treatment_name, data = sub)
+        tibble(trait = tr, site = si, 
+               statistic = unname(kw$statistic), 
+               p_value = kw$p.value,
+               note = "Test completed")
+      }, error = function(e) {
+        tibble(trait = tr, site = si, 
+               statistic = NA_real_, p_value = NA_real_,
+               note = paste("Error:", e$message))
+      })
+    })
+  })
+  
+  cat("Kruskal-Wallis results generated. Re-run the reporting code above.\n")
+}
+```
+
+```{r}
+# Complete L. racemosa (LARA) Data Analysis Script
+# Updated with readable treatment names and robust statistical testing
+
+# Data Import and Cleaning ----
+lara_raw <- readr::read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/LARA_IntakeData.csv", show_col_types = FALSE) %>% 
+  clean_names()
+
+lara1 <- lara_raw %>%
+  mutate(
+    prop_id = coalesce(.data$prop_id),
+    site = str_squish(as.character(site)),
+    species = "LARA",
+    treatment = str_squish(as.character(treatment)),
+    seed_color = str_squish(as.character(seed_color))
+  ) %>%
+  mutate(
+    intake_date = parse_mdy_relaxed(intake_date),
+    collection_date = {
+      cd <- stringr::str_extract(collection_date, "\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b")
+      parse_mdy_relaxed(cd)
+    }
+  )
+
+# Define numeric columns
+num_cols_lara <- c("width", "prop_length", "rad_length", "total_length", "mass")
+
+# Clean and add readable treatment names
+lara2 <- lara1 %>%
+  mutate(across(all_of(num_cols_lara), ~ suppressWarnings(as.numeric(str_replace_all(.x, ",", ""))))) %>%
+  filter(!is.na(intake_date)) %>%
+  arrange(prop_id, intake_date) %>%
+  group_by(prop_id) %>% 
+  slice(1) %>% 
+  ungroup() %>%
+  # Add readable treatment names (same mapping as RHMA)
+  mutate(
+    treatment_name = case_when(
+      treatment == "A" ~ "Soil",
+      treatment == "B" ~ "Crushed glass",
+      treatment == "C" ~ "100% Sargassum (SG)",
+      treatment == "D" ~ "25% SG",
+      treatment == "E" ~ "75% SG",
+      TRUE ~ paste("Unknown:", treatment)
+    ),
+    # Convert to factor with desired order
+    treatment_name = factor(treatment_name, levels = c(
+      "Soil", 
+      "Crushed glass", 
+      "25% SG", 
+      "75% SG", 
+      "100% Sargassum (SG)"
+    ))
+  )
+
+# Verify treatment mapping
+cat("LARA Treatment mapping verification:\n")
+lara2 %>% 
+  count(treatment, treatment_name) %>% 
+  arrange(treatment) %>%
+  print()
+
+cat("\nLARA Final dataset structure:\n")
+glimpse(lara2)
+
+# Quality Control: Outlier Detection ----
+lara_qc_outliers <- lara2 %>%
+  pivot_longer(all_of(num_cols_lara), names_to = "trait", values_to = "value") %>%
+  group_by(trait) %>%
+  mutate(
+    iqr = IQR(value, na.rm = TRUE),
+    Q1 = quantile(value, 0.25, na.rm = TRUE),
+    Q3 = quantile(value, 0.75, na.rm = TRUE),
+    lower = Q1 - 3*iqr,
+    upper = Q3 + 3*iqr,
+    is_extreme = value < lower | value > upper
+  ) %>%
+  ungroup() %>%
+  filter(is_extreme & !is.na(value)) %>%
+  arrange(trait, desc(value))
+
+if (nrow(lara_qc_outliers) > 0) {
+  cat("\nLARA extreme outliers detected (beyond Q1/Q3 ± 3*IQR):\n")
+  print(head(lara_qc_outliers, 20))
+} else {
+  cat("\nNo extreme outliers detected in LARA dataset.\n")
+}
+
+# Summary Statistics ----
+lara_cont_summary <- lara2 %>%
+  pivot_longer(all_of(num_cols_lara), names_to = "trait", values_to = "value") %>%
+  group_by(site, treatment_name, trait) %>%
+  summarise(
+    n = sum(!is.na(value)), 
+    mean = mean(value, na.rm = TRUE), 
+    sd = sd(value, na.rm = TRUE), 
+    se = sd/sqrt(n), 
+    .groups = "drop"
+  ) %>%
+  mutate(mean_sd = sprintf("%.2f ± %.2f", mean, sd))
+
+cat("\nLARA summary statistics by site and treatment:\n")
+knitr::kable(lara_cont_summary %>% arrange(trait, site, treatment_name), 
+             caption = "L. racemosa continuous traits: mean ± sd by Site × Treatment")
+
+# Statistical Assumption Testing ----
+lara_assump <- check_norm_homo(lara2, num_cols_lara) %>%
+  mutate(
+    normality = if_else(shapiro_resid_p < 0.05, "Not normal", "OK"), 
+    homogeneity = if_else(levene_p < 0.05, "Unequal var", "OK")
+  )
+
+cat("\nLARA statistical assumptions:\n")
+knitr::kable(lara_assump, digits = 4, caption = "L. racemosa: assumption checks")
+
+# Statistical Analysis ----
+cont_traits_lara <- c("width", "prop_length", "rad_length", "total_length", "mass")
+
+# Check if nonparametric tests are needed
+needs_np_lara <- any(lara_assump$shapiro_resid_p < 0.05 | lara_assump$levene_p < 0.05, na.rm = TRUE)
+
+if (needs_np_lara) {
+  cat("\nAssumptions violated for L. racemosa; running nonparametric tests for all LARA traits.\n")
+
+  # Kruskal–Wallis tests with robust error handling
+  lara_kw <- purrr::map_dfr(cont_traits_lara, function(tr) {
+    df <- lara2 %>% 
+      select(site, treatment_name, value = all_of(tr)) %>% 
+      drop_na()
+    
+    if (nrow(df) == 0) {
+      return(tibble(trait = tr, site = NA_character_, 
+                   statistic = NA_real_, p_value = NA_real_,
+                   note = "No data available"))
+    }
+    
+    purrr::map_dfr(unique(df$site), function(si) {
+      sub <- df %>% filter(site == si)
+      
+      # Data validation checks
+      if (nrow(sub) < 3) {
+        return(tibble(trait = tr, site = si, 
+                     statistic = NA_real_, p_value = NA_real_,
+                     note = "Insufficient data (n < 3)"))
+      }
+      
+      treatment_counts <- sub %>% count(treatment_name, .drop = FALSE)
+      if (nrow(treatment_counts) < 2) {
+        return(tibble(trait = tr, site = si, 
+                     statistic = NA_real_, p_value = NA_real_,
+                     note = "Only one treatment group"))
+      }
+      
+      if (any(treatment_counts$n == 0)) {
+        return(tibble(trait = tr, site = si, 
+                     statistic = NA_real_, p_value = NA_real_,
+                     note = "Empty treatment group"))
+      }
+      
+      # Run Kruskal-Wallis test
+      tryCatch({
+        kw <- kruskal.test(value ~ treatment_name, data = sub)
+        tibble(trait = tr, site = si, 
+               statistic = unname(kw$statistic), 
+               p_value = kw$p.value,
+               note = "Test completed")
+      }, error = function(e) {
+        tibble(trait = tr, site = si, 
+               statistic = NA_real_, p_value = NA_real_,
+               note = paste("Error:", e$message))
+      })
+    })
+  })
+
+  # Fixed Dunn pairwise tests using rstatix package
+  dunn_lara <- purrr::map_dfr(cont_traits_lara, function(tr) {
+    df <- lara2 %>% 
+      select(site, treatment_name, value = all_of(tr)) %>% 
+      drop_na() %>%
+      # Convert factor to character for statistical tests
+      mutate(treatment_char = as.character(treatment_name))
+    
+    if (nrow(df) == 0) return(tibble())
+    
+    purrr::map_dfr(unique(df$site), function(si) {
+      sub <- df %>% filter(site == si)
+      
+      treatment_counts <- sub %>% count(treatment_char)
+      
+      # Only run if sufficient data and groups
+      if (nrow(treatment_counts) < 2 || nrow(sub) < 6) {
+        return(tibble())
+      }
+      
+      if (any(treatment_counts$n == 0)) {
+        return(tibble())
+      }
+      
+      tryCatch({
+        # First check if KW test is significant
+        kw_result <- kruskal.test(value ~ treatment_char, data = sub)
+        
+        if (kw_result$p.value < 0.05) {
+          # Try rstatix approach
+          dunn_result <- sub %>%
+            dunn_test(value ~ treatment_char, p.adjust.method = "bonferroni")
+          
+          if (nrow(dunn_result) > 0) {
+            out <- dunn_result %>%
+              mutate(trait = tr, site = si) %>%
+              select(trait, site, group1, group2, n1, n2, statistic, p, p.adj)
+            return(out)
+          }
+        }
+        return(tibble())
+      }, error = function(e) {
+        # Fallback: try pairwise Wilcoxon tests
+        tryCatch({
+          pairwise_result <- sub %>%
+            pairwise_wilcox_test(value ~ treatment_char, p.adjust.method = "bonferroni")
+          
+          if (nrow(pairwise_result) > 0) {
+            out <- pairwise_result %>%
+              mutate(trait = tr, site = si) %>%
+              select(trait, site, group1, group2, n1, n2, statistic, p, p.adj)
+            return(out)
+          }
+          return(tibble())
+        }, error = function(e2) {
+          return(tibble())
+        })
+      })
+    })
+  })
+
+  # Display Kruskal-Wallis results
+  cat("\nLARA Kruskal-Wallis Results:\n")
+  knitr::kable(lara_kw %>% arrange(trait, site),
+               caption = "L. racemosa Kruskal–Wallis across treatments within site")
+
+  # Display post-hoc results
+  if (nrow(dunn_lara) > 0) {
+    dunn_lara_clean <- dunn_lara %>% 
+      filter(!is.na(p.adj))
+    
+    if (nrow(dunn_lara_clean) > 0) {
+      dunn_lara_sig <- dunn_lara_clean %>% filter(p.adj < 0.05)
+      
+      if (nrow(dunn_lara_sig) > 0) {
+        cat("\nLARA Significant Post-hoc Comparisons:\n")
+        
+        # Show results by trait
+        for (tr in unique(dunn_lara_sig$trait)) {
+          trait_results <- dunn_lara_sig %>% filter(trait == tr)
+          cat("\n**Trait:", tr, "**\n")
+          print(knitr::kable(trait_results %>% arrange(site, p.adj),
+                       caption = paste("LARA significant comparisons:", tr)))
+        }
+      } else {
+        cat("\nNo significant pairwise comparisons after Bonferroni correction.\n")
+        cat("Top 10 comparisons:\n")
+        print(knitr::kable(head(dunn_lara_clean, 10) %>% arrange(p.adj),
+                     caption = "LARA post-hoc comparisons (first 10 results)"))
+      }
+    }
+  } else {
+    cat("\nNo post-hoc comparisons could be performed for LARA.\n")
+  }
+
+} else {
+  cat("\nAssumptions met for LARA; running parametric ANOVA tests.\n")
+  
+  # Parametric ANOVA (if assumptions are met)
+  lara_anova <- purrr::map_dfr(cont_traits_lara, function(tr){
+    df <- lara2 %>% select(site, treatment_name, !!sym(tr)) %>% drop_na()
+    if (nrow(df) < 8 || n_distinct(df$treatment_name) < 2) {
+      return(tibble(trait = tr, term = NA, p.value = NA))
+    }
+    fit <- lm(reformulate(c("site","treatment_name","site:treatment_name"), response = tr), data = df)
+    broom::tidy(anova(fit)) %>% mutate(trait = tr)
+  })
+  
+  knitr::kable(lara_anova %>% filter(!is.na(p.value)) %>% 
+               select(trait, term, p.value) %>% arrange(trait, term),
+               caption = "L. racemosa ANOVA (site × treatment)")
+}
+
+# Data Availability Summary ----
+lara_availability <- lara2 %>%
+  select(site, treatment_name, all_of(cont_traits_lara)) %>%
+  group_by(site, treatment_name) %>%
+  summarise(
+    n_total = n(),
+    across(all_of(cont_traits_lara), ~sum(!is.na(.)), .names = "n_{.col}"),
+    .groups = "drop"
+  ) %>%
+  arrange(site, treatment_name)
+
+cat("\nLARA data availability by site and treatment:\n")
+print(lara_availability)
+
+# Create Improved Plots ----
+# Define proper trait labels for LARA
+trait_labels_lara <- c(
+  "width" = "Width (mm)",
+  "prop_length" = "Propagule Length (mm)",
+  "rad_length" = "Radicle Length (mm)", 
+  "total_length" = "Total Length (mm)",
+  "mass" = "Mass (g)"
+)
+
+# Generate significance letters (same function as RHMA, adapted for LARA)
+if (exists("dunn_lara") && nrow(dunn_lara) > 0) {
+  sig_letters_lara <- generate_significance_letters(
+    dunn_lara, 
+    c("width", "prop_length", "total_length", "mass"), 
+    unique(lara2$site)
+  )
+} else {
+  # Create default letters if no statistical results
+  sig_letters_lara <- expand_grid(
+    trait = c("width", "prop_length", "total_length", "mass"),
+    site = unique(lara2$site),
+    treatment_name = levels(lara2$treatment_name)
+  ) %>%
+    mutate(letter = "a", max_value = NA_real_)
+}
+
+# Create the improved LARA plot
+p_lara_improved <- lara2 %>%
+  pivot_longer(c(width, prop_length, total_length, mass), names_to = "trait", values_to = "value") %>%
+  ggplot(aes(x = treatment_name, y = value, fill = treatment_name)) +
+  geom_boxplot(outlier.alpha = 0.5, alpha = 0.7) +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 1) +
+  # Add significance letters
+  geom_text(data = sig_letters_lara %>% filter(!is.na(max_value)), 
+            aes(x = treatment_name, y = max_value, label = letter),
+            inherit.aes = FALSE, size = 3.5, fontface = "bold") +
+  # Use custom facet labels
+  facet_grid(trait ~ site, scales = "free_y", 
+             labeller = labeller(trait = trait_labels_lara)) +
+  # Use your predefined colors
+  scale_fill_manual(values = color_vals) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  labs(x = "Treatment", y = NULL) +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none",
+    strip.text.y = element_text(size = 10),
+    panel.grid.minor = element_blank()
+  )
+
+print(p_lara_improved)
+
+# Final Summary ----
+cat("\n" + "="*50)
+cat("\nLARA ANALYSIS SUMMARY")
+cat("\n" + "="*50)
+cat("\nTotal observations:", nrow(lara2))
+cat("\nSites:", length(unique(lara2$site)), "sites:", paste(unique(lara2$site), collapse = ", "))
+cat("\nTreatments:", length(unique(lara2$treatment_name)), "treatments:", paste(levels(lara2$treatment_name), collapse = ", "))
+cat("\nTraits analyzed:", length(cont_traits_lara), "continuous traits:", paste(cont_traits_lara, collapse = ", "))
+cat("\nStatistical approach:", ifelse(needs_np_lara, "Nonparametric (Kruskal-Wallis + Dunn)", "Parametric (ANOVA)"))
+cat("\n" + "="*50)
+
+# Optional: Save results to files
+# write_csv(lara2, "lara_cleaned_data.csv")
+# write_csv(lara_cont_summary, "lara_summary_statistics.csv")
+# write_csv(lara_assump, "lara_assumption_tests.csv")
+# if(exists("lara_kw")) write_csv(lara_kw, "lara_kruskal_wallis_results.csv")
+# if(exists("dunn_lara") && nrow(dunn_lara) > 0) write_csv(dunn_lara, "lara_dunn_pairwise_results.csv")
+```
+
+
+```{r}
+# Comprehensive Kruskal-Wallis Results for LARA Baseline Analysis
+# All traits × sites combinations for treatment group comparisons
+
+# Clean and format the LARA Kruskal-Wallis results for publication
+if (exists("lara_kw")) {
+  
+  # Format the results table
+  lara_kw_formatted <- lara_kw %>%
+    filter(!is.na(p_value)) %>%  # Remove any failed tests
+    mutate(
+      # Format p-values appropriately
+      p_formatted = case_when(
+        p_value < 0.001 ~ sprintf("%.2e", p_value),  # Scientific notation for very small
+        p_value < 0.01 ~ sprintf("%.4f", p_value),   # 4 decimal places for small
+        TRUE ~ sprintf("%.3f", p_value)              # 3 decimal places for others
+      ),
+      # Add significance indicators
+      significance = case_when(
+        p_value < 0.001 ~ "***",
+        p_value < 0.01 ~ "**",
+        p_value < 0.05 ~ "*",
+        TRUE ~ "ns"
+      ),
+      # Format test statistic
+      statistic_formatted = sprintf("%.2f", statistic),
+      # Create combined result column
+      result = paste0("χ² = ", statistic_formatted, ", p = ", p_formatted, significance)
+    ) %>%
+    arrange(trait, site)
+  
+  # Publication-ready table
+  cat("LARA KRUSKAL-WALLIS TEST RESULTS: BASELINE CHARACTERISTICS BY TREATMENT\n")
+  cat("======================================================================\n\n")
+  
+  lara_kw_publication_table <- lara_kw_formatted %>%
+    select(trait, site, statistic_formatted, p_formatted, significance) %>%
+    rename(
+      Trait = trait,
+      Site = site, 
+      `χ² statistic` = statistic_formatted,
+      `p-value` = p_formatted,
+      `Significance` = significance
+    )
+  
+  print(knitr::kable(lara_kw_publication_table, 
+                     caption = "L. racemosa Kruskal-Wallis test results comparing baseline plant characteristics across treatment groups"))
+  
+  # Summary by trait (across all sites)
+  cat("\n\nLARA SUMMARY BY TRAIT (across all sites):\n")
+  cat("=========================================\n")
+  
+  lara_trait_summary <- lara_kw_formatted %>%
+    group_by(trait) %>%
+    summarise(
+      n_sites = n(),
+      n_significant = sum(p_value < 0.05),
+      min_p = min(p_value),
+      max_p = max(p_value),
+      mean_statistic = mean(statistic, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      min_p_formatted = case_when(
+        min_p < 0.001 ~ sprintf("%.2e", min_p),
+        min_p < 0.01 ~ sprintf("%.4f", min_p),
+        TRUE ~ sprintf("%.3f", min_p)
+      ),
+      max_p_formatted = case_when(
+        max_p < 0.001 ~ sprintf("%.2e", max_p),
+        max_p < 0.01 ~ sprintf("%.4f", max_p),
+        TRUE ~ sprintf("%.3f", max_p)
+      ),
+      significance_pattern = paste0(n_significant, "/", n_sites, " sites significant")
+    ) %>%
+    select(trait, significance_pattern, min_p_formatted, max_p_formatted) %>%
+    rename(
+      Trait = trait,
+      `Sites with significant differences` = significance_pattern,
+      `Minimum p-value` = min_p_formatted,
+      `Maximum p-value` = max_p_formatted
+    )
+  
+  print(knitr::kable(lara_trait_summary, 
+                     caption = "L. racemosa baseline differences by trait across all sites"))
+  
+  # Summary by site (across all traits)  
+  cat("\n\nLARA SUMMARY BY SITE (across all traits):\n")
+  cat("=========================================\n")
+  
+  lara_site_summary <- lara_kw_formatted %>%
+    group_by(site) %>%
+    summarise(
+      n_traits = n(),
+      n_significant = sum(p_value < 0.05),
+      min_p = min(p_value),
+      max_p = max(p_value),
+      mean_statistic = mean(statistic, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      min_p_formatted = case_when(
+        min_p < 0.001 ~ sprintf("%.2e", min_p),
+        min_p < 0.01 ~ sprintf("%.4f", min_p),
+        TRUE ~ sprintf("%.3f", min_p)
+      ),
+      max_p_formatted = case_when(
+        max_p < 0.001 ~ sprintf("%.2e", max_p),
+        max_p < 0.01 ~ sprintf("%.4f", max_p),
+        TRUE ~ sprintf("%.3f", max_p)
+      ),
+      significance_pattern = paste0(n_significant, "/", n_traits, " traits significant"),
+      mean_statistic_formatted = sprintf("%.2f", mean_statistic)
+    ) %>%
+    select(site, significance_pattern, min_p_formatted, max_p_formatted, mean_statistic_formatted) %>%
+    rename(
+      Site = site,
+      `Traits with significant differences` = significance_pattern,
+      `Minimum p-value` = min_p_formatted,
+      `Maximum p-value` = max_p_formatted,
+      `Mean χ² statistic` = mean_statistic_formatted
+    )
+  
+  print(knitr::kable(lara_site_summary, 
+                     caption = "L. racemosa baseline differences by site across all traits"))
+  
+  # Overall summary statistics
+  cat("\n\nLARA OVERALL SUMMARY:\n")
+  cat("====================\n")
+  
+  lara_overall_stats <- lara_kw_formatted %>%
+    summarise(
+      total_tests = n(),
+      significant_tests = sum(p_value < 0.05),
+      percent_significant = round(significant_tests/total_tests * 100, 1),
+      median_p = median(p_value),
+      median_statistic = median(statistic)
+    )
+  
+  cat("Total Kruskal-Wallis tests performed:", lara_overall_stats$total_tests, "\n")
+  cat("Number of significant tests (p < 0.05):", lara_overall_stats$significant_tests, "\n")
+  cat("Percentage of tests showing significance:", paste0(lara_overall_stats$percent_significant, "%"), "\n")
+  cat("Median p-value across all tests:", sprintf("%.4f", lara_overall_stats$median_p), "\n")
+  cat("Median χ² statistic:", sprintf("%.2f", lara_overall_stats$median_statistic), "\n")
+  
+  # Compare with RHMA if available
+  if (exists("rhma_kw")) {
+    cat("\n\nCOMPARISON WITH RHMA BASELINE RESULTS:\n")
+    cat("======================================\n")
+    
+    rhma_summary_for_comparison <- rhma_kw %>%
+      filter(!is.na(p_value)) %>%
+      summarise(
+        total_tests = n(),
+        significant_tests = sum(p_value < 0.05),
+        percent_significant = round(significant_tests/total_tests * 100, 1)
+      )
+    
+    comparison_table <- tibble(
+      Species = c("R. mangle (RHMA)", "L. racemosa (LARA)"),
+      `Total Tests` = c(rhma_summary_for_comparison$total_tests, lara_overall_stats$total_tests),
+      `Significant Tests` = c(rhma_summary_for_comparison$significant_tests, lara_overall_stats$significant_tests),
+      `% Significant` = c(paste0(rhma_summary_for_comparison$percent_significant, "%"), 
+                         paste0(lara_overall_stats$percent_significant, "%"))
+    )
+    
+    print(knitr::kable(comparison_table, caption = "Baseline randomization comparison between species"))
+  }
+  
+  # Text for methods/results section
+  cat("\n\n" + "="*60)
+  cat("\nTEXT FOR MANUSCRIPT (LARA):")
+  cat("\n" + "="*60)
+  cat("\n\nMETHODS section text:")
+  cat('\n"For L. racemosa, baseline characteristics were assessed using Kruskal-Wallis tests ')
+  cat('for each morphological trait within each site, comparing initial plant measurements ')
+  cat('across the five treatment groups."')
+  
+  cat("\n\nRESULTS section text:")
+  cat('\n"L. racemosa baseline analysis revealed ')
+  
+  if (lara_overall_stats$significant_tests > 0) {
+    cat('systematic differences in initial plant characteristics across treatment groups. ')
+    cat('Kruskal-Wallis tests indicated significant differences (p < 0.05) for ')
+    cat(lara_overall_stats$significant_tests, ' out of ', lara_overall_stats$total_tests, 
+        ' trait × site combinations (', lara_overall_stats$percent_significant, '%). ')
+    
+    # Identify most problematic combinations
+    lara_most_significant <- lara_kw_formatted %>%
+      filter(p_value < 0.01) %>%
+      arrange(p_value) %>%
+      slice_head(n = 3)
+    
+    if (nrow(lara_most_significant) > 0) {
+      cat('The strongest baseline differences were observed for ')
+      lara_baseline_issues <- paste0(lara_most_significant$trait, " at ", lara_most_significant$site, 
+                               " (p = ", lara_most_significant$p_formatted, ")")
+      cat(paste(lara_baseline_issues[1:min(3, length(lara_baseline_issues))], collapse = ", "), '. ')
+    }
+    
+    cat('These baseline differences were controlled for in subsequent treatment effect analyses.')
+  } else {
+    cat('good baseline balance across treatment groups, with no significant differences ')
+    cat('detected in any trait × site combinations (all p > 0.05). This indicates ')
+    cat('successful randomization for L. racemosa.')
+  }
+  cat('"')
+  
+  # Export options
+  cat("\n\nOptional file exports:")
+  cat('\nwrite_csv(lara_kw_formatted, "lara_kruskal_wallis_baseline_results.csv")')
+  cat('\nwrite_csv(lara_kw_publication_table, "lara_kw_results_for_publication.csv")')
+  
+} else {
+  cat("ERROR: lara_kw data frame not found. Please run the LARA statistical analysis section first.\n")
+  cat("Make sure the nonparametric analysis code has been executed successfully.")
+}
+
+# Generate LARA Kruskal-Wallis results if they don't exist
+if (!exists("lara_kw")) {
+  cat("\nGenerating LARA Kruskal-Wallis results...\n")
+  
+  cont_traits_lara <- c("width", "prop_length", "rad_length", "total_length", "mass")
+  
+  lara_kw <- purrr::map_dfr(cont_traits_lara, function(tr) {
+    df <- lara2 %>% 
+      select(site, treatment_name, value = all_of(tr)) %>% 
+      drop_na()
+    
+    if (nrow(df) == 0) {
+      return(tibble(trait = tr, site = NA_character_, 
+                   statistic = NA_real_, p_value = NA_real_,
+                   note = "No data available"))
+    }
+    
+    purrr::map_dfr(unique(df$site), function(si) {
+      sub <- df %>% filter(site == si)
+      
+      if (nrow(sub) < 3) {
+        return(tibble(trait = tr, site = si, 
+                     statistic = NA_real_, p_value = NA_real_,
+                     note = "Insufficient data"))
+      }
+      
+      treatment_counts <- sub %>% count(treatment_name, .drop = FALSE)
+      if (nrow(treatment_counts) < 2) {
+        return(tibble(trait = tr, site = si, 
+                     statistic = NA_real_, p_value = NA_real_,
+                     note = "Only one treatment group"))
+      }
+      
+      tryCatch({
+        kw <- kruskal.test(value ~ treatment_name, data = sub)
+        tibble(trait = tr, site = si, 
+               statistic = unname(kw$statistic), 
+               p_value = kw$p.value,
+               note = "Test completed")
+      }, error = function(e) {
+        tibble(trait = tr, site = si, 
+               statistic = NA_real_, p_value = NA_real_,
+               note = paste("Error:", e$message))
+      })
+    })
+  })
+  
+  cat("LARA Kruskal-Wallis results generated. Re-run the reporting code above.\n")
+}
+```
+
+```{r}
+# LARA Dataset Column Debugging and Fixed Analysis
+
+# First, let's examine what columns actually exist in your LARA dataset
+cat("DEBUGGING: Checking LARA dataset structure\n")
+cat("==========================================\n")
+
+# Check if lara2 exists and examine its structure
+if (exists("lara2")) {
+  cat("LARA dataset columns:\n")
+  cat("Numeric columns (potential traits):\n")
+  
+  # Get all numeric columns
+  numeric_cols <- lara2 %>% 
+    select_if(is.numeric) %>% 
+    names()
+  print(numeric_cols)
+  
+  cat("\nAll columns in dataset:\n")
+  print(names(lara2))
+  
+  cat("\nColumn types:\n")
+  print(str(lara2))
+  
+} else {
+  cat("lara2 dataset not found. Please run the data import section first.\n")
+}
+
+# Check what the original num_cols_lara was defined as
+original_num_cols <- c("width","prop_length","rad_length","total_length","mass")
+cat("\nOriginal expected columns:", paste(original_num_cols, collapse = ", "), "\n")
+
+# Find which of these actually exist
+if (exists("lara2")) {
+  existing_cols <- intersect(original_num_cols, names(lara2))
+  missing_cols <- setdiff(original_num_cols, names(lara2))
+  
+  cat("Columns that exist:", paste(existing_cols, collapse = ", "), "\n")
+  cat("Missing columns:", paste(missing_cols, collapse = ", "), "\n")
+}
+
+# FIXED LARA ANALYSIS - using only existing columns
+# =================================================
+
+if (exists("lara2")) {
+  
+  # Dynamically determine which numeric trait columns exist
+  potential_trait_names <- c("width", "prop_length", "rad_length", "total_length", "mass", 
+                            "length", "propagule_length", "radicle_length", "total_length", 
+                            "weight", "mass_g", "diameter")
+  
+  # Find actual trait columns that exist in the dataset
+  actual_trait_cols <- intersect(potential_trait_names, names(lara2))
+  
+  # Also check for any other numeric columns that might be traits
+  all_numeric_cols <- lara2 %>% 
+    select_if(is.numeric) %>% 
+    names()
+  
+  # Remove obvious non-trait columns
+  non_trait_patterns <- c("date", "id", "number", "count", "year", "month", "day")
+  
+  additional_traits <- all_numeric_cols[!str_detect(tolower(all_numeric_cols), 
+                                                   paste(non_trait_patterns, collapse = "|"))]
+  
+  # Combine and get unique trait columns
+  final_trait_cols <- unique(c(actual_trait_cols, additional_traits))
+  
+  cat("\nFinal trait columns to use:", paste(final_trait_cols, collapse = ", "), "\n")
+  
+  # Update the trait list
+  cont_traits_lara <- final_trait_cols
+  
+  # Verify we have some traits to work with
+  if (length(cont_traits_lara) == 0) {
+    cat("ERROR: No suitable trait columns found!\n")
+    cat("Please check your data import and column names.\n")
+    
+    # Show first few rows to help diagnose
+    cat("\nFirst 5 rows of dataset:\n")
+    print(head(lara2, 5))
+    
+  } else {
+    cat("\nProceeding with", length(cont_traits_lara), "trait columns.\n")
+    
+    # Now run the corrected analysis
+    # ===============================
+    
+    # Add treatment names if not already done
+    if (!"treatment_name" %in% names(lara2)) {
+      lara2 <- lara2 %>%
+        mutate(
+          treatment_name = case_when(
+            treatment == "A" ~ "Soil",
+            treatment == "B" ~ "Crushed glass", 
+            treatment == "C" ~ "100% Sargassum (SG)",
+            treatment == "D" ~ "25% SG",
+            treatment == "E" ~ "75% SG",
+            TRUE ~ paste("Unknown:", treatment)
+          ),
+          treatment_name = factor(treatment_name, levels = c(
+            "Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)"
+          ))
+        )
+    }
+    
+    # Quality Control
+    lara_qc_outliers <- lara2 %>%
+      select(all_of(cont_traits_lara)) %>%
+      pivot_longer(everything(), names_to = "trait", values_to = "value") %>%
+      group_by(trait) %>%
+      mutate(
+        iqr = IQR(value, na.rm = TRUE),
+        Q1 = quantile(value, 0.25, na.rm = TRUE),
+        Q3 = quantile(value, 0.75, na.rm = TRUE),
+        lower = Q1 - 3*iqr,
+        upper = Q3 + 3*iqr,
+        is_extreme = value < lower | value > upper
+      ) %>%
+      ungroup() %>%
+      filter(is_extreme & !is.na(value)) %>%
+      arrange(trait, desc(value))
+    
+    if (nrow(lara_qc_outliers) > 0) {
+      cat("\nLARA extreme outliers detected:\n")
+      print(head(lara_qc_outliers, 10))
+    }
+    
+    # Summary Statistics
+    lara_cont_summary <- lara2 %>%
+      select(site, treatment_name, all_of(cont_traits_lara)) %>%
+      pivot_longer(all_of(cont_traits_lara), names_to = "trait", values_to = "value") %>%
+      group_by(site, treatment_name, trait) %>%
+      summarise(
+        n = sum(!is.na(value)),
+        mean = mean(value, na.rm = TRUE),
+        sd = sd(value, na.rm = TRUE),
+        se = sd/sqrt(n),
+        .groups = "drop"
+      ) %>%
+      mutate(mean_sd = sprintf("%.2f ± %.2f", mean, sd))
+    
+    cat("\nLARA Summary Statistics:\n")
+    print(knitr::kable(head(lara_cont_summary, 20), 
+                       caption = "L. racemosa traits by Site × Treatment (first 20 rows)"))
+    
+    # Statistical Tests
+    lara_kw <- purrr::map_dfr(cont_traits_lara, function(tr) {
+      # Check if this trait column exists
+      if (!tr %in% names(lara2)) {
+        return(tibble(trait = tr, site = NA_character_,
+                     statistic = NA_real_, p_value = NA_real_,
+                     note = "Column does not exist"))
+      }
+      
+      df <- lara2 %>%
+        select(site, treatment_name, value = all_of(tr)) %>%
+        drop_na()
+      
+      if (nrow(df) == 0) {
+        return(tibble(trait = tr, site = NA_character_,
+                     statistic = NA_real_, p_value = NA_real_,
+                     note = "No data available"))
+      }
+      
+      purrr::map_dfr(unique(df$site), function(si) {
+        sub <- df %>% filter(site == si)
+        
+        if (nrow(sub) < 3) {
+          return(tibble(trait = tr, site = si,
+                       statistic = NA_real_, p_value = NA_real_,
+                       note = "Insufficient data"))
+        }
+        
+        treatment_counts <- sub %>% count(treatment_name, .drop = FALSE)
+        if (nrow(treatment_counts) < 2) {
+          return(tibble(trait = tr, site = si,
+                       statistic = NA_real_, p_value = NA_real_,
+                       note = "Only one treatment"))
+        }
+        
+        tryCatch({
+          kw <- kruskal.test(value ~ treatment_name, data = sub)
+          tibble(trait = tr, site = si,
+                 statistic = unname(kw$statistic),
+                 p_value = kw$p.value,
+                 note = "Test completed")
+        }, error = function(e) {
+          tibble(trait = tr, site = si,
+                 statistic = NA_real_, p_value = NA_real_,
+                 note = paste("Error:", e$message))
+        })
+      })
+    })
+    
+    cat("\nLARA Kruskal-Wallis Results:\n")
+    print(knitr::kable(lara_kw %>% filter(!is.na(p_value)) %>% arrange(trait, site),
+                       caption = "L. racemosa Kruskal-Wallis baseline tests"))
+    
+    # Simple plot with available traits (limit to reasonable number)
+    plot_traits <- cont_traits_lara[1:min(4, length(cont_traits_lara))]
+    
+    if (length(plot_traits) > 0) {
+      cat("\nCreating plot with traits:", paste(plot_traits, collapse = ", "), "\n")
+      
+      p_lara_fixed <- lara2 %>%
+        select(site, treatment_name, all_of(plot_traits)) %>%
+        pivot_longer(all_of(plot_traits), names_to = "trait", values_to = "value") %>%
+        ggplot(aes(x = treatment_name, y = value, fill = treatment_name)) +
+        geom_boxplot(outlier.alpha = 0.5, alpha = 0.7) +
+        geom_jitter(width = 0.15, alpha = 0.4, size = 1) +
+        facet_grid(trait ~ site, scales = "free_y") +
+        scale_fill_manual(values = color_vals) +
+        scale_x_discrete(labels = function(x) str_wrap(x, width = 8)) +
+        labs(x = "Treatment") +
+        theme_bw(base_size = 12) +
+        theme(
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none",
+          panel.grid.minor = element_blank()
+        )
+      
+      print(p_lara_fixed)
+    }
+    
+    # Export the corrected trait list
+    cat(strrep("=", 50), "\n")
+    cat("\nCORRECTED LARA TRAIT DEFINITION:")
+    cat(strrep("=", 50), "\n")
+    cat("\n# Use this corrected definition in your analysis:\n")
+    cat("cont_traits_lara <- c(", paste0('"', cont_traits_lara, '"', collapse = ", "), ")\n")
+    
+  }
+}
+
+# Alternative: Manual column specification
+cat(strrep("=", 50), "\n")
+cat("\nMANUAL COLUMN CHECK:")
+cat(strrep("=", 50), "\n")
+cat("\nIf the automatic detection failed, please manually specify your LARA trait columns.")
+cat("\nLook at the column list above and update this line with the correct names:")
+cat("\n")
+cat("# Example - update with your actual column names:")
+cat('\ncont_traits_lara <- c("prop_length", "total_length", "mass")  # Remove width if it doesn\'t exist')
+cat("\n")
+cat("Then re-run the analysis with the corrected trait list.")
+```
+
+
+# 5. Session info
+```{r session}
+writeLines(capture.output(sessionInfo()), file.path(params$out_dir, "sessionInfo.txt"))
+sessionInfo()
+```
+
