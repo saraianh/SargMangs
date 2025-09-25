@@ -546,15 +546,30 @@ par(mfrow = c(1, 1))
 cat("\n\n2. HOMOGENEITY OF VARIANCE TESTS\n")
 cat(strrep("-",40), "\n\n")
 
-# Levene's Test
-levene_model <- lm(Height ~ Treatment_Name * Species, data = final_heights_test)
-levene_result <- leveneTest(Height ~ Treatment_Name * Species, data = final_heights_test)
+library(car)
+# # Levene's Test
+levene_result_LARA<- leveneTest(Height ~ Treatment_Name, data=final_heights_test[final_heights_test$Species=="LARA",] )
+levene_result_RHMA<- leveneTest(Height ~ Treatment_Name, data=final_heights_test[final_heights_test$Species=="RHMA",] )
 
-cat("Levene's Test for Homogeneity of Variance:\n")
-print(levene_result)
-cat("\nInterpretation: p-value", 
-    ifelse(levene_result$`Pr(>F)`[1] > 0.05, "> 0.05 - Equal variances assumed\n",
+print(levene_result_LARA)
+cat("\nInterpretation: p-value",
+    ifelse(levene_result_LARA$`Pr(>F)`[1] > 0.05, "> 0.05 - Equal variances assumed\n",
            "< 0.05 - Unequal variances detected\n"))
+
+print(levene_result_RHMA)
+cat("\nInterpretation: p-value",
+    ifelse(levene_result_RHMA$`Pr(>F)`[1] > 0.05, "> 0.05 - Equal variances assumed\n",
+           "< 0.05 - Unequal variances detected\n"))
+
+# levene_model <- lm(Height ~ Treatment_Name * Species, data = final_heights_test)
+# levene_model
+# levene_result <- leveneTest(Height ~ Treatment_Name * Species, data = final_heights_test)
+# 
+# cat("Levene's Test for Homogeneity of Variance:\n")
+# print(levene_result)
+# cat("\nInterpretation: p-value", 
+#     ifelse(levene_result$`Pr(>F)`[1] > 0.05, "> 0.05 - Equal variances assumed\n",
+#            "< 0.05 - Unequal variances detected\n"))
 
 # # Bartlett's Test (more sensitive to non-normality)
 # ##this code did not work
@@ -622,10 +637,14 @@ change_normality %>%
   kable_styling(bootstrap_options = c("striped", "hover"))
 
 # B. Levene's test for height change
-levene_change <- leveneTest(Height_Change ~ Treatment_Name * Species, 
-                            data = height_change_test)
-cat("\n\nLevene's Test for Height Change:\n")
-print(levene_change)
+levene_changeLARA <- leveneTest(Height_Change ~ Treatment_Name, 
+                            data = height_change_test[height_change_test$Species=="LARA",])
+levene_changeRHMA <- leveneTest(Height_Change ~ Treatment_Name, 
+                            data = height_change_test[height_change_test$Species=="RHMA",])
+cat("\n\nLevene's Test for LARA Height Change:\n")
+print(levene_changeLARA)
+cat("\n\nLevene's Test for RHMA Height Change:\n")
+print(levene_changeRHMA)
 
 # 3. TRANSFORMATION IF NEEDED
 cat("\n\n", strrep("=", 60), "\n\n")
@@ -633,10 +652,13 @@ cat("DATA TRANSFORMATIONS (if assumptions violated)\n")
 cat("\n\n", strrep("=", 60), "\n\n")
 
 # Check if transformation is needed
-needs_transform <- any(normality_results$normal == "No", na.rm = TRUE) | 
-                  levene_result$`Pr(>F)`[1] < 0.05
+needs_transformLARA <- any(normality_results$normal == "No", na.rm = TRUE) | 
+                  levene_result_LARA$`Pr(>F)`[1] < 0.05
 
-if(needs_transform) {
+needs_transformRHMA <- any(normality_results$normal == "No", na.rm = TRUE) | 
+                  levene_result_RHMA$`Pr(>F)`[1] < 0.05
+
+if(needs_transformLARA) {
   cat("Assumptions violated. Trying transformations...\n\n")
   
   # Log transformation (for right-skewed data)
@@ -686,9 +708,9 @@ percent_normal <- (normal_groups/total_groups) * 100
 
 cat("Normality: ", normal_groups, "/", total_groups, 
     " groups are normal (", round(percent_normal, 1), "%)\n", sep = "")
-cat("Homogeneity: Levene's test p =", round(levene_result$`Pr(>F)`[1], 4), "\n\n")
+cat("Homogeneity: Levene's test p =", round(levene_result_LARA$`Pr(>F)`[1], 4), "\n\n")
 
-if(percent_normal > 80 & levene_result$`Pr(>F)`[1] > 0.05) {
+if(percent_normal > 80 & levene_result_LARA$`Pr(>F)`[1] > 0.05) {
   cat("✓ Proceed with parametric ANOVA\n")
   cat("  - Most groups show normality\n")
   cat("  - Variances are homogeneous\n")
@@ -701,9 +723,129 @@ if(percent_normal > 80 & levene_result$`Pr(>F)`[1] > 0.05) {
   cat("  - Kruskal-Wallis test recommended\n")
   cat("  - Follow with Dunn's test for pairwise comparisons\n")
 }
+
+cat("Normality: ", normal_groups, "/", total_groups, 
+    " groups are normal (", round(percent_normal, 1), "%)\n", sep = "")
+cat("Homogeneity: Levene's test p =", round(levene_result_RHMA$`Pr(>F)`[1], 4), "\n\n")
+
+if(percent_normal > 80 & levene_result_RHMA$`Pr(>F)`[1] > 0.05) {
+  cat("✓ Proceed with parametric ANOVA\n")
+  cat("  - Most groups show normality\n")
+  cat("  - Variances are homogeneous\n")
+} else if(percent_normal > 50) {
+  cat("⚠ Consider robust ANOVA or transformation\n")
+  cat("  - ANOVA is fairly robust to minor violations\n")
+  cat("  - Consider Welch's ANOVA if variances are unequal\n")
+} else {
+  cat("✗ Use non-parametric tests\n")
+  cat("  - Kruskal-Wallis test recommended\n")
+  cat("  - Follow with Dunn's test for pairwise comparisons\n")
+}
+
+# LARA (heteroskedastic):
+## Parametric, unequal variances: Welch ANOVA + Games–Howell
+
+
+height_change_test %>%
+  filter(is.finite(Height_Change)) %>%
+  count(Species, Treatment_Name, name = "n") %>%
+  arrange(Species, n)
+
+library(PMCMRplus)
+
+# run_welch_safe <- function(df) {
+#   # keep only groups with n >= 2
+#   df2 <- df %>%
+#     filter(is.finite(Height_Change)) %>%
+#     group_by(Treatment_Name) %>%
+#     filter(n() >= 2) %>%
+#     ungroup()%>%
+#     droplevels()
+# 
+#   if (n_distinct(df2$Treatment_Name) < 2) return(NULL)  # not enough groups left
+# 
+#   w <- oneway.test(Height_Change ~ Treatment_Name, data = df2)         # Welch
+#   gh <- tryCatch(PMCMRplus::gamesHowellTest(Height_Change ~ Treatment_Name, data = df2),
+#                  error = function(e) NULL)
+#   list(welch = w, gh = gh, n_by_group = df %>% count(Treatment_Name, name="n_raw"))
+# }
+
+run_welch_safe <- function(df) {
+  # More aggressive cleaning
+  df2 <- df %>%
+    filter(is.finite(Height_Change)) %>%
+    group_by(Treatment_Name) %>%
+    filter(n() >= 2) %>%
+    ungroup() %>%
+    # Convert to data.frame and clean factors
+    as.data.frame() %>%
+    mutate(
+      Treatment_Name = as.character(Treatment_Name),
+      Treatment_Name = factor(Treatment_Name)  # This removes unused levels
+    )
+  
+  if (n_distinct(df2$Treatment_Name) < 2) return(NULL)
+  
+  w <- tryCatch(oneway.test(Height_Change ~ Treatment_Name, data = df2), 
+                error = function(e) NULL)
+  gh <- tryCatch(PMCMRplus::gamesHowellTest(Height_Change ~ Treatment_Name, data = df2),
+                 error = function(e) NULL)
+  
+  list(welch = w, gh = gh, n_by_group = df %>% count(Treatment_Name, name="n_raw"))
+}
+
+# Example: loop species × time
+res_welch <- height_change_test %>%
+  group_by(Species) %>%
+  group_modify(~ tibble(result = list(run_welch_safe(.x)))) %>%
+  ungroup()
+
+# View results
+res_welch %>%
+  mutate(
+    welch_p = map_dbl(result, ~ .x$welch$p.value %||% NA),
+    has_gh = map_lgl(result, ~ !is.null(.x$gh))
+  )
+
+
+
+# Test with one species
+test_result <- height_change_test %>%
+  filter(Species == "RHMA") %>%
+  run_welch_safe()
+
+
+
+
+
+library(FSA); library(multcompView); library(stringr)
+
+run_kw_dunn_safe <- function(df) {
+  df2 <- df %>%
+    filter(is.finite(Height_Change)) %>%
+    group_by(Treatment_Name) %>% filter(n() >= 2) %>% ungroup()
+  if (n_distinct(df2$Treatment_Name) < 2) return(NULL)
+
+  kw   <- kruskal.test(Height_Change ~ Treatment_Name, data = df2)
+  dunn <- FSA::dunnTest(Height_Change ~ Treatment_Name, data = df2, method = "holm")$res
+  pv   <- setNames(dunn$P.adj, str_replace_all(dunn$Comparison, " - ", "-"))
+  cld  <- multcompLetters(pv, threshold = 0.05)$Letters
+  list(kw = kw, dunn = dunn, letters = tibble(Treatment_Name = names(cld), Letter = unname(cld)))
+}
+
+library(nlme); library(emmeans)
+m <- nlme::lme(Height_Change ~ Species*Treatment_Name,
+               random = ~1|Prop_ID,
+               correlation = corAR1(form=~Prop_ID),
+               weights = varIdent(form=~1|Treatment_Name),
+               data = height_change_test)
+emmeans(m, pairwise ~ Treatment_Name | Species, adjust = "holm")
+
 ```
 
-Height change data does not meet normality or homogeneity of variances even after log transformations. It also has uneven group sizes since not many LARA survived in the end. I will instead run a non-parametric Kruskal Wallis test on each species and follow it up by post hoc Dunns test.
+The correct call is Welch/Games–Howell (or KW/Dunn) for LARA and standard ANOVA/Tukey for RHMA (assumptions satisfied).
+
+Height change data for LARA does not meet normality or homogeneity of variances even after log transformations. It also has uneven group sizes since not many LARA survived in the end. I will instead run a non-parametric Kruskal Wallis test on each species and follow it up by post hoc Dunns test.
 
 The original Growth (Change in Height) Analysis is not to be used; code chunk: height-change-analysis-bad. The height-change-plots code chunk is fine though.
 
@@ -928,9 +1070,9 @@ keep_trt <- n_by_trt %>% filter(n >= 2) %>% pull(Treatment_Name)
 lara_pair <- lara_data %>% filter(Treatment_Name %in% keep_trt) %>% droplevels()
 
 # 3) KW + Dunn (use "holm" or your original "bonferroni")
-kw_lara   <- kruskal_test(lara_pair, Height_Change ~ Treatment_Name)
-dunn_lara <- dunn_test(lara_pair, Height_Change ~ Treatment_Name,
-                       p.adjust.method = "bonferroni")
+kw_lara <- kruskal.test(Height_Change ~ Treatment_Name, data = lara_pair)
+dunn_lara <- lara_pair %>% 
+  dunn_test(Height_Change ~ Treatment_Name, p.adjust.method = "holm")
 
 # 4) Compact-letter display
 dunn_pairs <- dunn_lara %>%
@@ -967,9 +1109,10 @@ summ_lara <- lara_data %>%
 ###
 
 
-kw_rhma  <- kruskal_test(rhma_data, Height_Change ~ Treatment_Name)
+kw_rhma  <- kruskal.test(Height_Change ~ Treatment_Name, data = rhma_data)
 
-dunn_rhma <- dunn_test(rhma_data, Height_Change ~ Treatment_Name,
+dunn_rhma <- rhma_data %>%
+  dunn_test(Height_Change ~ Treatment_Name,
                        p.adjust.method = "bonferroni")
 kw_rhma
 dunn_rhma
@@ -1046,7 +1189,7 @@ p_growth <- ggplot(height_change_data,
   scale_fill_manual(values = color_vals) +
   scale_color_manual(values = color_vals) +
   labs(
-    title = "Total Height Growth Difference of Survivors (TP6 - TP0)",
+    title = "Total Height Growth Difference of Survivors (Month 6 - Month 0)",
     subtitle = expression(italic("L. racemosa")*": Growth above substrate | " * italic("R. mangle")*": Epicotyl growth"),
     x = "Treatment",
     y = "Height Change (cm)"
@@ -1145,6 +1288,41 @@ clean_treatment <- function(df, treat_col) {
     )
 }
 
+# --------- 2) Read & inspect -------------------------------------------------
+AGR <- readr::read_csv(path_agr, show_col_types = FALSE) %>% janitor::clean_names()
+RGR <- readr::read_csv(path_rgr, show_col_types = FALSE) %>% janitor::clean_names()
+
+cat("AGR columns:\n"); print(names(AGR))
+cat("RGR columns:\n"); print(names(RGR))
+
+
+# --------- 3) Resolve key columns -------------------------------------------
+id_col_agr <- pick_col(AGR, c("prop_id"))
+id_col_rgr <- pick_col(RGR, c("prop_id"))
+id_col     <- dplyr::coalesce(id_col_agr, id_col_rgr)
+
+agr_col <- pick_col(AGR, c("agr"))
+rgr_col <- pick_col(RGR, c("rgr"))
+
+species_col_agr <- pick_col(AGR, c("species", "Species"))
+species_col_rgr <- pick_col(RGR, c("species", "Species"))
+
+treat_col_agr <- pick_col(AGR, c("treatment", "treatment_name"))
+treat_col_rgr <- pick_col(RGR, c("treatment", "treatment_name"))
+
+# Add Species from ID if missing
+if (!is.na(id_col) && is.na(species_col_agr) && id_col %in% names(AGR)) AGR <- add_species_from_id(AGR, id_col)
+if (!is.na(id_col) && is.na(species_col_rgr) && id_col %in% names(RGR)) RGR <- add_species_from_id(RGR, id_col)
+
+
+species_col <- dplyr::coalesce(pick_col(AGR, c("species", "Species")),
+                               pick_col(RGR, c("species", "Species")))
+treat_col   <- dplyr::coalesce(treat_col_agr, treat_col_rgr)
+
+# Clean treatment labels
+if (!is.na(treat_col) && treat_col %in% names(AGR)) AGR <- clean_treatment(AGR, treat_col)
+if (!is.na(treat_col) && treat_col %in% names(RGR)) RGR <- clean_treatment(RGR, treat_col)
+
 # ---- RGR sanity filter (keep existing rgr; only flag extremes) ----
 stopifnot(!is.na(rgr_col), rgr_col %in% names(RGR))
 
@@ -1174,7 +1352,7 @@ RGR <- RGR %>%
   } %>%
   # <<< add this line to flag, not filter >>>
   mutate(flag_big_rgr = abs(.data[[rgr_col]]) > 0.2) %>%
-  select(-.init, -.final, -.weeks)
+  dplyr::select(-.init, -.final, -.weeks)
 
 summarize_metric <- function(df, value_col, group_cols) {
   df %>%
@@ -1224,42 +1402,6 @@ plot_box <- function(df, value_col, treat_col, species_col = NA_character_,
   p
 }
 
-# --------- 2) Read & inspect -------------------------------------------------
-AGR <- readr::read_csv(path_agr, show_col_types = FALSE) %>% janitor::clean_names()
-RGR <- readr::read_csv(path_rgr, show_col_types = FALSE) %>% janitor::clean_names()
-
-cat("AGR columns:\n"); print(names(AGR))
-cat("RGR columns:\n"); print(names(RGR))
-
-# --------- 3) Resolve key columns -------------------------------------------
-id_col_agr <- pick_col(AGR, c("prop_id"))
-id_col_rgr <- pick_col(RGR, c("prop_id"))
-id_col     <- dplyr::coalesce(id_col_agr, id_col_rgr)
-
-agr_col <- pick_col(AGR, c("agr"))
-rgr_col <- pick_col(RGR, c("rgr"))
-
-species_col_agr <- pick_col(AGR, c("species", "Species"))
-species_col_rgr <- pick_col(RGR, c("species", "Species"))
-
-treat_col_agr <- pick_col(AGR, c("treatment", "treatment_name"))
-treat_col_rgr <- pick_col(RGR, c("treatment", "treatment_name"))
-
-# Add Species from ID if missing
-if (!is.na(id_col) && is.na(species_col_agr) && id_col %in% names(AGR)) AGR <- add_species_from_id(AGR, id_col)
-if (!is.na(id_col) && is.na(species_col_rgr) && id_col %in% names(RGR)) RGR <- add_species_from_id(RGR, id_col)
-
-species_col <- dplyr::coalesce(pick_col(AGR, c("species", "Species")),
-                               pick_col(RGR, c("species", "Species")))
-treat_col   <- dplyr::coalesce(treat_col_agr, treat_col_rgr)
-
-# Clean treatment labels
-if (!is.na(treat_col) && treat_col %in% names(AGR)) AGR <- clean_treatment(AGR, treat_col)
-if (!is.na(treat_col) && treat_col %in% names(RGR)) RGR <- clean_treatment(RGR, treat_col)
-
-cat("\nDetected columns:\n")
-cat(glue("ID: {id_col}\nSpecies: {species_col}\nTreatment: {treat_col}\n",
-         "AGR metric: {agr_col}\nRGR metric: {rgr_col}\n"))
 
 # --------- 4) Summaries ------------------------------------------------------
 group_vars <- c()
@@ -1322,6 +1464,110 @@ if (nrow(RGR_sum)) {
 
 
 ```{r}
+#==============================
+#CHECK ANOVA ASSUMPTIONS
+#==============================
+check_anova_assumptions <- function(df, y, trt = "treatment_name") {
+  mod <- aov(reformulate(trt, y), data = df)
+  data.frame(
+    response   = y,
+    shapiro_p  = tryCatch(shapiro.test(residuals(mod))$p.value, error = function(e) NA),
+    levene_p   = tryCatch(leveneTest(reformulate(trt, y), data = df)$`Pr(>F)`[1], error = function(e) NA),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Example assuming you have AGR and RGR with columns treatment_name, agr, rgr:
+assump_tbl <- dplyr::bind_rows(
+  check_anova_assumptions(dplyr::filter(AGR, Species == "LARA"), "agr"),
+  check_anova_assumptions(dplyr::filter(RGR, Species == "LARA"), "rgr"),
+  check_anova_assumptions(dplyr::filter(AGR, Species == "RHMA"), "agr"),
+  check_anova_assumptions(dplyr::filter(RGR, Species == "RHMA"), "rgr")
+)
+assump_tbl
+
+# how to read those assumption p-values and which test to run for each combo (assuming the rows are LARA then RHMA):
+# 
+# LARA – AGR: Shapiro = 0.917 (OK), Levene = 0.037 (unequal variances) → Welch ANOVA + Games–Howell.
+# 
+# LARA – RGR: Shapiro = 0.005 (non-normal), Levene = 0.422 (OK) → Kruskal–Wallis + Dunn.
+# 
+# RHMA – AGR: Shapiro = 0.453 (OK), Levene = 0.642 (OK) → Classical one-way ANOVA + Tukey.
+# 
+# RHMA – RGR: Shapiro = 2.3e-05 (non-normal), Levene = 0.575 (OK) → Kruskal–Wallis + Dunn.
+
+# With non-normal, heteroskedastic residuals and group sizes ~9–10, prefer Welch ANOVA + Games–Howell (per species). Here’s a drop-in:
+
+library(rstatix)
+# LARA
+welch_L_agr <- oneway_test(agr ~ treatment_name, data = dplyr::filter(AGR, Species=="LARA"))
+gh_L_agr <- dplyr::filter(AGR, Species=="LARA") %>% games_howell_test(agr ~ treatment_name)
+
+# RHMA
+welch_R_agr <- oneway_test(agr ~ treatment_name, data = dplyr::filter(AGR, Species=="RHMA"))
+gh_R_agr <- dplyr::filter(AGR, Species=="RHMA") %>% games_howell_test(agr ~ treatment_name)
+
+
+#Add letters from Games–Howell (for plots/tables):
+library(multcompView)
+
+to_letters <- function(gh_df) {
+  lev <- sort(unique(c(gh_df$group1, gh_df$group2)))
+  M <- matrix(1, length(lev), length(lev), dimnames = list(lev, lev))
+  for (i in seq_len(nrow(gh_df))) {
+    g1 <- gh_df$group1[i]; g2 <- gh_df$group2[i]
+    M[g1,g2] <- M[g2,g1] <- ifelse(gh_df$p.adj[i] < 0.05, 0, 1)
+  }
+  tibble::enframe(multcompLetters(M)$Letters, name="treatment_name", value="letters")
+}
+
+letters_L_agr <- to_letters(gh_L_agr)
+
+
+# Helper: turn pairwise table (Games-Howell or Dunn) into letters
+to_letters <- function(pairs_df, g1 = "group1", g2 = "group2", pcol = "p.adj", alpha = 0.05) {
+  lev <- sort(unique(c(pairs_df[[g1]], pairs_df[[g2]])))
+  M <- matrix(1, length(lev), length(lev), dimnames = list(lev, lev))
+  for (i in seq_len(nrow(pairs_df))) {
+    a <- pairs_df[[g1]][i]; b <- pairs_df[[g2]][i]
+    sig <- pairs_df[[pcol]][i] < alpha
+    M[a,b] <- M[b,a] <- ifelse(sig, 0, 1)
+  }
+  tibble::enframe(multcompLetters(M)$Letters, name = "treatment_name", value = "letters")
+}
+
+library(coin)
+
+## ---------- LARA ----------
+L_agr <- filter(AGR, Species == "LARA")
+# Welch omnibus + Games–Howell
+welch_L_agr <- oneway_test(agr ~ treatment_name, data = L_agr)  # Welch ANOVA
+gh_L_agr <- games_howell_test(L_agr, agr ~ treatment_name)
+letters_L_agr <- to_letters(gh_L_agr)
+
+L_rgr <- filter(RGR, Species == "LARA")
+# Kruskal–Wallis + Dunn
+kw_L_rgr <- rstatix::kruskal_test(L_rgr, rgr ~ treatment_name)
+dunn_L_rgr <- dunn_test(L_rgr, rgr ~ treatment_name, p.adjust.method = "bonferroni")
+letters_L_rgr <- to_letters(dunn_L_rgr, g1 = "group1", g2 = "group2", pcol = "p.adj")
+
+## ---------- RHMA ----------
+R_agr <- filter(AGR, Species == "RHMA")
+# Classical ANOVA + Tukey
+fit_R_agr <- aov(agr ~ treatment_name, data = R_agr)
+tuk_R_agr <- pairs(emmeans(fit_R_agr, ~ treatment_name), adjust = "tukey") %>% as.data.frame()
+# Build letters from emeans table
+letters_R_agr <- emmeans(fit_R_agr, ~ treatment_name) %>%
+  cld(adjust = "tukey") %>%
+  as.data.frame() %>%
+  transmute(treatment_name, letters = trimws(.group))
+
+R_rgr <- filter(RGR, Species == "RHMA")
+# Kruskal–Wallis + Dunn
+kw_R_rgr <- rstatix::kruskal_test(R_rgr, rgr ~ treatment_name)
+dunn_R_rgr <- dunn_test(R_rgr, rgr ~ treatment_name, p.adjust.method = "bonferroni")
+letters_R_rgr <- to_letters(dunn_R_rgr)
+
 library(emmeans)
 ## LARA
 fit_agr_L <- lm(agr ~ treatment_name, data = subset(AGR, Species == "LARA"))
