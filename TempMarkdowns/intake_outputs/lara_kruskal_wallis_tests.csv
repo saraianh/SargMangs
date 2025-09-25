@@ -1,0 +1,16 @@
+Trait,Site,H (df),p-value,N,Result
+width,VB,14.002 (4),0.007289783926652122,100,Significant
+width,MB,13.084 (4),0.01087151303908843,100,Significant
+width,PR,7.500 (4),0.11171667596253729,100,Non-significant
+prop_length,VB,15.165 (4),0.004370574524527443,100,Significant
+prop_length,MB,10.316 (4),0.03542129544223774,100,Significant
+prop_length,PR,9.136 (4),0.05778794225543131,100,Non-significant
+rad_length,VB,8.557 (4),0.07318187966126508,100,Non-significant
+rad_length,MB,72.422 (4),6.988062776632772e-15,100,Significant
+rad_length,PR,13.859 (4),0.007759857627011494,100,Significant
+total_length,VB,8.044 (4),0.08999751753942897,100,Non-significant
+total_length,MB,44.534 (4),4.970213174453912e-9,100,Significant
+total_length,PR,6.145 (4),0.18859484207718127,100,Non-significant
+mass,VB,31.761 (4),2.140398389753023e-6,100,Significant
+mass,MB,34.295 (4),6.481594075964114e-7,100,Significant
+mass,PR,9.597 (4),0.047792552905739,100,Significant

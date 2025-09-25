@@ -1,0 +1,20 @@
+===  LARA  ANALYSIS SUMMARY ===
+
+Files created:
+- lara_assumption_tests.csv (raw data)
+- lara_kruskal_wallis_tests.csv (raw data)
+- lara_pairwise_comparisons.csv (raw data)
+- lara_table1_assumptions.html (formatted)
+- lara_table2_kruskal_wallis.html (formatted)
+- lara_table3_pairwise.html (formatted)
+- lara_formatted_tables.txt (text format)
+- lara_summary_report.txt (this file)
+
+
+Analysis Summary:
+- Assumption tests: 5 traits tested
+- Kruskal-Wallis tests: 15 trait-site combinations
+- Significant pairwise comparisons: 28
+- Normality violations: 4/5
+- Homogeneity violations: 4/5
+- Significant overall effects: 10/15

@@ -1,0 +1,29 @@
+.y.,group1,group2,n1,n2,statistic,p,p.adj,p.adj.signif,trait,site,comparison
+value,100% Sargassum (SG),Crushed glass,20,20,-5.132172056496823,2.864174877869934e-7,2.864174877869934e-6,****,mass,MB,100% Sargassum (SG) vs Crushed glass
+value,25% SG,Crushed glass,20,20,-4.657677934376499,3.197959872690198e-6,3.197959872690198e-5,****,mass,MB,25% SG vs Crushed glass
+value,75% SG,Crushed glass,20,20,-3.1360243703354653,0.001712549721588157,0.01712549721588157,*,mass,MB,75% SG vs Crushed glass
+value,100% Sargassum (SG),Soil,20,20,-3.0460341057954046,0.0023188153075743042,0.023188153075743043,*,mass,MB,100% Sargassum (SG) vs Soil
+value,100% Sargassum (SG),25% SG,20,20,4.9289245891507445,8.268347915188529e-7,8.268347915188529e-6,****,mass,VB,100% Sargassum (SG) vs 25% SG
+value,100% Sargassum (SG),Soil,20,20,4.500915097725597,6.766153032479812e-6,6.766153032479813e-5,****,mass,VB,100% Sargassum (SG) vs Soil
+value,100% Sargassum (SG),Crushed glass,20,20,4.27191638893762,1.9380024525419446e-5,1.9380024525419447e-4,***,mass,VB,100% Sargassum (SG) vs Crushed glass
+value,100% Sargassum (SG),75% SG,20,20,3.2959457014840985,9.809097192762233e-4,0.009809097192762233,**,mass,VB,100% Sargassum (SG) vs 75% SG
+value,25% SG,Crushed glass,20,20,2.832821895828023,0.0046139085455382456,0.04613908545538246,*,prop_length,MB,25% SG vs Crushed glass
+value,100% Sargassum (SG),Soil,20,20,3.154924672745063,0.0016053954870984028,0.016053954870984027,*,prop_length,VB,100% Sargassum (SG) vs Soil
+value,100% Sargassum (SG),Crushed glass,20,20,3.0320055296510993,0.0024293475354596507,0.024293475354596507,*,prop_length,VB,100% Sargassum (SG) vs Crushed glass
+value,100% Sargassum (SG),25% SG,20,20,3.0238109201115018,0.0024961239028563455,0.024961239028563453,*,prop_length,VB,100% Sargassum (SG) vs 25% SG
+value,100% Sargassum (SG),Crushed glass,20,20,-6.665284428247151,2.6415327560299785e-11,2.6415327560299784e-10,****,rad_length,MB,100% Sargassum (SG) vs Crushed glass
+value,100% Sargassum (SG),Soil,20,20,-6.185747149245973,6.180901261088314e-10,6.180901261088314e-9,****,rad_length,MB,100% Sargassum (SG) vs Soil
+value,25% SG,Crushed glass,20,20,-5.743097353244885,9.29602448694609e-9,9.296024486946089e-8,****,rad_length,MB,25% SG vs Crushed glass
+value,25% SG,Soil,20,20,-5.263560074243706,1.4129231023939883e-7,1.4129231023939883e-6,****,rad_length,MB,25% SG vs Soil
+value,75% SG,Crushed glass,20,20,-3.569573354931851,3.5756308672194866e-4,0.0035756308672194865,**,rad_length,MB,75% SG vs Crushed glass
+value,100% Sargassum (SG),75% SG,20,20,-3.0957110733153006,0.0019634157505015923,0.019634157505015924,*,rad_length,MB,100% Sargassum (SG) vs 75% SG
+value,75% SG,Soil,20,20,-3.0900360759306724,0.0020013218505027094,0.020013218505027096,*,rad_length,MB,75% SG vs Soil
+value,100% Sargassum (SG),Crushed glass,20,20,-2.85441978189232,0.004311551873912346,0.04311551873912346,*,rad_length,PR,100% Sargassum (SG) vs Crushed glass
+value,25% SG,Crushed glass,20,20,-2.8295987403106473,0.004660641607759709,0.04660641607759709,*,rad_length,PR,25% SG vs Crushed glass
+value,100% Sargassum (SG),Soil,20,20,-5.6342970060518,1.7577386560106326e-8,1.7577386560106327e-7,****,total_length,MB,100% Sargassum (SG) vs Soil
+value,25% SG,Soil,20,20,-4.664279820237838,3.096997273899408e-6,3.096997273899408e-5,****,total_length,MB,25% SG vs Soil
+value,100% Sargassum (SG),Crushed glass,20,20,-4.524925238613861,6.0416859021934056e-6,6.0416859021934056e-5,****,total_length,MB,100% Sargassum (SG) vs Crushed glass
+value,25% SG,Crushed glass,20,20,-3.5549080527998993,3.7811129122234007e-4,0.0037811129122234007,**,total_length,MB,25% SG vs Crushed glass
+value,100% Sargassum (SG),75% SG,20,20,-3.0794630096122106,0.0020737412037974477,0.020737412037974478,*,total_length,MB,100% Sargassum (SG) vs 75% SG
+value,Crushed glass,Soil,20,20,-3.5655989186599197,3.630262017393901e-4,0.003630262017393901,**,width,MB,Crushed glass vs Soil
+value,100% Sargassum (SG),Crushed glass,20,20,3.4112357511624922,6.466915075324061e-4,0.006466915075324061,**,width,VB,100% Sargassum (SG) vs Crushed glass

@@ -1,0 +1,12 @@
+===  LARA  PUBLICATION-READY TABLES ===
+
+Table 1: Assumption Testing Results
+===================================
+
+
+Table 2: Kruskal-Wallis Test Results
+====================================
+
+
+Table 3: Significant Pairwise Comparisons
+=========================================

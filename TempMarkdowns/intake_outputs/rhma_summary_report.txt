@@ -1,0 +1,20 @@
+===  RHMA  ANALYSIS SUMMARY ===
+
+Files created:
+- rhma_assumption_tests.csv (raw data)
+- rhma_kruskal_wallis_tests.csv (raw data)
+- rhma_pairwise_comparisons.csv (raw data)
+- rhma_table1_assumptions.html (formatted)
+- rhma_table2_kruskal_wallis.html (formatted)
+- rhma_table3_pairwise.html (formatted)
+- rhma_formatted_tables.txt (text format)
+- rhma_summary_report.txt (this file)
+
+
+Analysis Summary:
+- Assumption tests: 5 traits tested
+- Kruskal-Wallis tests: 15 trait-site combinations
+- Significant pairwise comparisons: 39
+- Normality violations: 5/5
+- Homogeneity violations: 0/5
+- Significant overall effects: 15/15

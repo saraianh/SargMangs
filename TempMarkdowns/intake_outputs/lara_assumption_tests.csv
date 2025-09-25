@@ -1,0 +1,6 @@
+Trait,Shapiro-Wilk W (df),p-value,Normality,"Levene's F (df1, df2)",p-value ,Homogeneity
+width,0.949 (300),1.076732820055871e-8,Violated,"1.587 (14, 285)",0.08186333704697911,OK
+prop_length,0.993 (300),0.15221288991840892,OK,"4.738 (14, 285)",8.27318511772815e-8,Violated
+rad_length,0.752 (300),6.335691405392058e-21,Violated,"2.118 (14, 285)",0.011147543492427199,Violated
+total_length,0.866 (300),1.7937294646394718e-15,Violated,"2.245 (14, 285)",0.006646675192094486,Violated
+mass,0.978 (300),1.32273997984491e-4,Violated,"7.621 (14, 285)",1.2874202901211013e-13,Violated
