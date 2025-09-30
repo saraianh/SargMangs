@@ -246,7 +246,7 @@ p_height_time <- ggplot(height_by_time,
   scale_shape_manual(values = shape_vals) +
   labs(title = "Mean Height Over Time (Survivors Only)",
        subtitle = expression(italic("L. racemosa: ")*"Shoot Height | "*italic("R. mangle: ")* "Epicotyl Length") ,
-       x = "Time Period",
+       x = "Month",
        y = "Height (cm)",
        color = "Treatment",
        shape = "Treatment") +
@@ -281,7 +281,7 @@ final_replicate_means <- height_by_replicate %>%
               names_sep = "_Rep")
 
 final_replicate_means %>%
-  kable(caption = "Final Height by Replicate (TP6 Survivors)",
+  kable(caption = "Final Height by Replicate (Month 6 Survivors)",
         digits = 2) %>%
   kable_styling(bootstrap_options = c("striped", "hover"))
 
@@ -308,7 +308,7 @@ p_height_replicates <- ggplot(height_by_replicate,
   scale_shape_manual(values = shape_vals) +
   labs(title = "Height Over Time - Replicate Means (Faint Lines) and Treatment Means (Bold)",
        subtitle = expression(italic("R. mangle: "*"Epicotyl Length | "*italic("L. racemosa: "*"Max Height"))),
-       x = "Time Period",
+       x = "Month",
        y = "Height (cm)",
        color = "Treatment",
        shape = "Treatment") +
@@ -808,7 +808,6 @@ res_welch %>%
   )
 
 
-
 # Test with one species
 test_result <- height_change_test %>%
   filter(Species == "RHMA") %>%
@@ -960,7 +959,7 @@ print(growth_ranks)
 ```
 
 DO NOT USE. ASSUMPTIONS VIOLATED.
-```{r height-change-analysis-bad}
+```{r height-change-analysis-bad, eval=FALSE, include=FALSE}
 # Statistical analysis of growth
 # ANOVA for height change
 growth_model <- aov(Height_Change ~ Treatment_Name * Species, data = height_change_data)
@@ -1189,7 +1188,7 @@ p_growth <- ggplot(height_change_data,
   scale_fill_manual(values = color_vals) +
   scale_color_manual(values = color_vals) +
   labs(
-    title = "Total Height Growth Difference of Survivors (Month 6 - Month 0)",
+    title = "Total Height Change of Survivors (Month 6 - Month 0)",
     subtitle = expression(italic("L. racemosa")*": Growth above substrate | " * italic("R. mangle")*": Epicotyl growth"),
     x = "Treatment",
     y = "Height Change (cm)"
@@ -1974,7 +1973,7 @@ print(p_height_box)
 
 ```
 
-This entire section needs some work. It's just for visulaization mostly.
+This entire section needs some work. It's just for visualization mostly.
 <!-- Created a new version of the plot above with improved visuals.  -->
 <!-- ```{r final-height} -->
 <!-- # Analyze final heights (Time Period 6) -->
@@ -2202,6 +2201,9 @@ y_pad <- 0.5  # tweak to taste
 pos_br <- branch_data |>
   group_by(Species, Treatment_Name) |>
   summarise(y = max(Number_Branches_num, na.rm = TRUE) + y_pad, .groups = "drop") |>
+  left_join(branch_summary %>% select(Species, Treatment_Name, n), 
+            by = c("Species", "Treatment_Name")) |>
+  filter(n > 2) |>  # Only show letters for treatments with n > 2
   left_join(cld_br, by = c("Species", "Treatment_Name"))
 
 # --- 3) Overlay CLD letters (and add headroom so they don't clip) ---
@@ -2240,7 +2242,7 @@ if(nrow(node_data) > 0) {
 # --- 1) Fit once and get CLD letters per Species ---
 fit_nodes <- lm(Total_Nodes_num ~ Treatment_Name * Species, data = branch_data)
 
-cld_br <- emmeans(fit_nodes, ~ Treatment_Name | Species) |>
+cld_nod <- emmeans(fit_nodes, ~ Treatment_Name | Species) |>
   cld(adjust = "tukey", Letters = letters) |>
   as.data.frame() |>
   transmute(
@@ -2251,15 +2253,20 @@ cld_br <- emmeans(fit_nodes, ~ Treatment_Name | Species) |>
 
 # --- 2) Compute y-positions (a bit above each box) for overlay ---
 y_pad <- 0.8  # tweak to taste
-pos_br <- node_data |>
+pos_nod <- node_data |>
   group_by(Species, Treatment_Name) |>
-  summarise(y = max(Total_Nodes_num, na.rm = TRUE) + y_pad, .groups = "drop") |>
-  left_join(cld_br, by = c("Species", "Treatment_Name"))
+  summarise(
+    y = max(Total_Nodes_num, na.rm = TRUE) + y_pad,
+    n = n(),  # Add sample size calculation
+    .groups = "drop"
+  ) |>
+  filter(n > 2) |>  # Only show letters for treatments with n > 2
+  left_join(cld_nod, by = c("Species", "Treatment_Name"))
 
 # --- 3) Overlay CLD letters (and add headroom so they don't clip) ---
 p_nodes <- p_nodes +
   geom_text(
-    data = pos_br,
+    data = pos_nod,
     aes(x = Treatment_Name, y = y, label = letters),
     inherit.aes = FALSE,
     size = 4
@@ -2298,9 +2305,14 @@ if (nrow(leaf_data) > 0) {
   # y-positions a bit above each box/violin per facet
   y_pad <- 1.5  # raise if labels crowd whiskers
   pos_leaves <- leaf_data |>
-    group_by(Species, Treatment_Name) |>
-    summarise(y = max(Total_Leaves_num, na.rm = TRUE) + y_pad, .groups = "drop") |>
-    left_join(leaf_cld, by = c("Species", "Treatment_Name"))
+  group_by(Species, Treatment_Name) |>
+  summarise(
+    y = max(Total_Leaves_num, na.rm = TRUE) + y_pad,
+    n = n(),  # Add sample size calculation
+    .groups = "drop"
+  ) |>
+  filter(n > 2) |>  # Only show letters for treatments with n > 2
+  left_join(leaf_cld, by = c("Species", "Treatment_Name"))
 
   # Overlay letters on your existing plot `p_leaves`
   p_leaves <- p_leaves +
