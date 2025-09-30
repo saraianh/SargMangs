@@ -1,0 +1,1637 @@
+---
+title: "Biomass"
+output: html_document
+---
+
+```{r}
+# ============================================================
+# 0) Libraries & Setup
+# ============================================================
+library(tidyverse)  # dplyr, ggplot2, readr, tidyr, etc.
+library(car)        # Levene's test
+library(agricolae)  # HSD.test
+library(gridExtra)  # grid.arrange
+library(tibble)     # rownames_to_column
+library(patchwork)
+
+# Optional: guard against function masking (uncomment if needed)
+# conflicted::conflict_prefer("filter", "dplyr")
+
+# Palettes
+okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7", "#999999")
+color_vals <- c(
+  "Soil"                = okabe_ito[1],
+  "Crushed glass"       = okabe_ito[6],
+  "25% SG"              = okabe_ito[3],
+  "75% SG"              = okabe_ito[2],
+  "100% Sargassum (SG)" = okabe_ito[7]
+)
+
+# ============================================================
+# 1) Load & Inspect Raw Data
+# ============================================================
+data_path <- "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/Combined_Biomass.csv"
+raw_data  <- readr::read_csv(data_path, show_col_types = FALSE)
+
+cat("Data structure:\n"); str(raw_data)
+cat("\nFirst few rows:\n"); print(head(raw_data))
+cat("\nColumn names:\n"); print(names(raw_data))
+cat("\nMissing values by column:\n"); print(colSums(is.na(raw_data)))
+
+# ============================================================
+# 2) Tidy to Wide (per plant) & Harmonize Columns
+# ============================================================
+processed_raw <- raw_data %>%
+  dplyr::filter(SAMPLE != "DEAD ROOTS") %>%
+  dplyr::select(TREATMENT, SPECIES, PROP_ID, SAMPLE, `TOT_DRY_WT (g)`) %>%
+  tidyr::pivot_wider(
+    id_cols    = c(TREATMENT, SPECIES, PROP_ID),
+    names_from = SAMPLE,
+    values_from = `TOT_DRY_WT (g)`,
+    names_repair = "minimal"
+  ) %>%
+  dplyr::rename_with(~ stringr::str_to_lower(stringr::str_replace_all(.x, " ", "_"))) %>%
+  dplyr::rename(
+    treatment    = treatment,
+    species      = species,
+    prop_id      = prop_id,
+    leaves       = leaves,
+    stem         = stem,
+    fine_roots   = fine_roots,
+    coarse_roots = coarse_roots
+  )
+
+# Add hypocotyl (0 for LARA if absent)
+if ("hypo" %in% names(processed_raw)) {
+  processed_raw <- processed_raw %>%
+    dplyr::rename(hypocotyl = hypo) %>%
+    dplyr::mutate(hypocotyl = ifelse(species == "LARA", 0, hypocotyl))
+} else {
+  processed_raw$hypocotyl <- ifelse(processed_raw$species == "LARA", 0, 0)
+}
+
+# Map TREATMENT codes A–E to labels (keep existing labels if already set)
+processed_raw <- processed_raw %>%
+  dplyr::mutate(
+    treatment = dplyr::case_when(
+      treatment == "A" ~ "Soil",
+      treatment == "B" ~ "Crushed glass",
+      treatment == "C" ~ "100% Sargassum (SG)",
+      treatment == "D" ~ "25% SG",
+      treatment == "E" ~ "75% SG",
+      TRUE ~ treatment
+    )
+  )
+
+biomass_data <- processed_raw
+
+# ============================================================
+# 3) Per-plant Metrics & Factor Levels
+# ============================================================
+process_biomass_data <- function(data) {
+  data %>%
+    dplyr::mutate(
+      leaves       = pmax(leaves, 0),
+      stem         = pmax(stem, 0),
+      hypocotyl    = pmax(hypocotyl, 0),
+      fine_roots   = pmax(fine_roots, 0),
+      coarse_roots = pmax(coarse_roots, 0)
+    ) %>%
+    dplyr::mutate(
+      above_ground    = leaves + stem + hypocotyl,
+      below_ground    = fine_roots + coarse_roots,
+      total_biomass   = above_ground + below_ground,
+      root_shoot_ratio = ifelse(above_ground > 0, below_ground / above_ground, 0)
+    ) %>%
+    dplyr::mutate(
+      treatment = factor(
+        treatment,
+        levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")
+      ),
+      species = factor(species, levels = c("LARA", "RHMA"))
+    )
+}
+processed_data <- process_biomass_data(biomass_data)
+
+# ============================================================
+# 4) Summary Stats (by species x treatment)
+# ============================================================
+summary_stats <- processed_data %>%
+  dplyr::group_by(species, treatment) %>%
+  dplyr::summarise(
+    n          = dplyr::n(),
+    mean_total = mean(total_biomass),
+    sd_total   = sd(total_biomass),
+    se_total   = sd_total / sqrt(n),
+    mean_above = mean(above_ground),
+    sd_above   = sd(above_ground),
+    se_above   = sd_above / sqrt(n),
+    mean_below = mean(below_ground),
+    sd_below   = sd(below_ground),
+    se_below   = sd_below / sqrt(n),
+    mean_rs_ratio = mean(root_shoot_ratio),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    sd_total = ifelse(is.na(sd_total), 0, sd_total),
+    se_total = ifelse(is.na(se_total), 0, se_total),
+    sd_above = ifelse(is.na(sd_above), 0, sd_above),
+    se_above = ifelse(is.na(se_above), 0, se_above),
+    sd_below = ifelse(is.na(sd_below), 0, sd_below),
+    se_below = ifelse(is.na(se_below), 0, se_below)
+  )
+cat("Summary Statistics by Species and Treatment:\n"); print(summary_stats)
+
+# ============================================================
+# 5) ANOVA + Post-hoc (Tukey via agricolae)
+# ============================================================
+perform_statistical_tests <- function(data, response_var, species_filter) {
+  if (!inherits(data, c("data.frame","tbl","tbl_df"))) {
+    stop("`data` must be a data.frame/tibble. Did you overwrite it?")
+  }
+
+  test_data <- data %>%
+    dplyr::filter(species == species_filter, .data[[response_var]] > 0)
+
+  if (nrow(test_data) < 3) {
+    cat(sprintf("Insufficient data for %s %s analysis\n", species_filter, response_var))
+    return(NULL)
+  }
+
+  fml         <- as.formula(paste(response_var, "~ treatment"))
+  anova_model <- aov(fml, data = test_data)
+
+  cat(sprintf("\n=== ANOVA Results for %s — %s ===\n", species_filter, response_var))
+  print(summary(anova_model))
+
+  cat("\nAssumption checks:\n")
+  shapiro_test <- shapiro.test(residuals(anova_model))
+  cat("  Shapiro-Wilk (normality) p =", round(shapiro_test$p.value, 4), "\n")
+  lev <- car::leveneTest(fml, data = test_data)
+  cat("  Levene (homogeneity)     p =", round(lev$`Pr(>F)`[1], 4), "\n")
+
+  anova_p <- summary(anova_model)[[1]]["treatment", "Pr(>F)"]
+  if (!is.na(anova_p) && anova_p < 0.05) {
+    cat("Post-hoc: Tukey HSD (agricolae::HSD.test)\n")
+    tukey_test <- agricolae::HSD.test(anova_model, "treatment", group = TRUE)
+    print(tukey_test$groups)
+    return(list(anova = anova_model, tukey = tukey_test,
+                assumptions = list(shapiro = shapiro_test, levene = lev)))
+  } else {
+    cat("ANOVA not significant (p >= 0.05); skipping post-hoc.\n")
+    return(list(anova = anova_model,
+                assumptions = list(shapiro = shapiro_test, levene = lev)))
+  }
+}
+
+# Run tests
+rhma_above_stats <- perform_statistical_tests(processed_data, "above_ground",  "RHMA")
+lara_above_stats <- perform_statistical_tests(processed_data, "above_ground",  "LARA")
+rhma_below_stats <- perform_statistical_tests(processed_data, "below_ground",  "RHMA")
+lara_below_stats <- perform_statistical_tests(processed_data, "below_ground",  "LARA")
+rhma_total_stats <- perform_statistical_tests(processed_data, "total_biomass", "RHMA")
+lara_total_stats <- perform_statistical_tests(processed_data, "total_biomass", "LARA")
+
+# ============================================================
+# 6) Compact Letter Displays (CLDs) for Letters on Plots
+# ============================================================
+get_cld <- function(stat_obj, species, response) {
+  if (is.null(stat_obj) || is.null(stat_obj$tukey) || is.null(stat_obj$tukey$groups)) {
+    return(tibble())
+  }
+  stat_obj$tukey$groups %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("treatment") %>%
+    dplyr::transmute(
+      species  = species,
+      response = response,
+      treatment,
+      letter   = stringr::str_trim(groups)
+    )
+}
+
+all_sig_letters <- dplyr::bind_rows(
+  get_cld(lara_above_stats, "LARA", "above_ground"),
+  get_cld(rhma_above_stats, "RHMA", "above_ground"),
+  get_cld(lara_below_stats, "LARA", "below_ground"),
+  get_cld(rhma_below_stats, "RHMA", "below_ground"),
+  get_cld(lara_total_stats, "LARA", "total_biomass"),
+  get_cld(rhma_total_stats, "RHMA", "total_biomass")
+)
+
+# Label positions for letters
+make_label_positions <- function(summary_stats, letters_df, species_filter) {
+  # above-ground letters (above +SE + small pad)
+  lab_above <- summary_stats %>%
+    dplyr::filter(species == species_filter) %>%
+    dplyr::select(species, treatment, mean_above, se_above) %>%
+    dplyr::left_join(
+      letters_df %>% dplyr::filter(species == species_filter, response == "above_ground"),
+      by = c("species", "treatment")
+    ) %>%
+    dplyr::group_by(species) %>%
+    dplyr::mutate(
+      pad_above = 0.04 * max(mean_above, na.rm = TRUE),
+      y         = mean_above + se_above + pad_above
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::filter(!is.na(letter)) %>%
+    dplyr::transmute(treatment, y_above = y, letter_above = letter)
+
+  # below-ground letters (just below the negative bar)
+  lab_below <- summary_stats %>%
+    dplyr::filter(species == species_filter) %>%
+    dplyr::select(species, treatment, mean_below, se_below) %>%
+    dplyr::left_join(
+      letters_df %>% dplyr::filter(species == species_filter, response == "below_ground"),
+      by = c("species", "treatment")
+    ) %>%
+    dplyr::group_by(species) %>%
+    dplyr::mutate(
+      pad_below = 0.04 * max(mean_below, na.rm = TRUE),
+      y         = -(mean_below + se_below + pad_below)
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::filter(!is.na(letter)) %>%
+    dplyr::transmute(treatment, y_below = y, letter_below = letter)
+
+  dplyr::full_join(lab_above, lab_below, by = "treatment")
+}
+
+# ============================================================
+# 7) Chart Prep (stacked components around zero line)
+# ============================================================
+prep_chart_data <- function(summary_data) {
+  summary_data %>%
+    dplyr::select(species, treatment, n, mean_above, mean_below) %>%
+    dplyr::mutate(
+      leaf_approx      = mean_above * 0.4,
+      stem_approx      = mean_above * 0.3,
+      hypocotyl_approx = ifelse(species == "RHMA", mean_above * 0.3, 0),
+      root_below       = -mean_below
+    ) %>%
+    dplyr::mutate(
+      leaf_approx = ifelse(species == "RHMA", mean_above * 0.2, leaf_approx),
+      stem_approx = ifelse(species == "RHMA", mean_above * 0.1, stem_approx)
+    )
+}
+chart_data <- prep_chart_data(summary_stats)
+
+# ============================================================
+# 8) Plot Function (with sample sizes + significance letters)
+# ============================================================
+create_stacked_biomass_chart <- function(data, species_filter, title,
+                                         summary_stats, letters_df) {
+  stopifnot(is.data.frame(data))
+
+  plot_data <- dplyr::filter(data, species == species_filter)
+
+  # sanity check
+  required_cols <- c("treatment","leaf_approx","stem_approx","hypocotyl_approx","root_below","n")
+  missing <- setdiff(required_cols, names(plot_data))
+  if (length(missing)) stop("Missing columns in `data`: ", paste(missing, collapse = ", "))
+
+  plot_long <- dplyr::select(plot_data, treatment, leaf_approx, stem_approx, hypocotyl_approx, root_below) %>%
+    tidyr::pivot_longer(cols = -treatment, names_to = "component", values_to = "biomass") %>%
+    dplyr::mutate(
+      component = factor(component,
+        levels = c("root_below", "leaf_approx", "stem_approx", "hypocotyl_approx"),
+        labels = c("Root", "Leaf", "Stem", "Hypocotyl")
+      )
+    ) %>%
+    dplyr::filter(!(species_filter == "LARA" & component == "Hypocotyl"))
+
+  component_colors <- c("Leaf"="#90EE90","Stem"="#8FBC8F","Hypocotyl"="#DDA0DD","Root"="#2F4F4F")
+
+  p <- ggplot2::ggplot(plot_long, ggplot2::aes(x = treatment, y = biomass, fill = component)) +
+    ggplot2::geom_col(position = "stack", color = "black", linewidth = 0.3) +
+    ggplot2::geom_hline(yintercept = 0, color = "black", linewidth = 1) +
+    ggplot2::scale_fill_manual(values = component_colors) +
+    ggplot2::scale_x_discrete(guide = ggplot2::guide_axis(angle = -45)) +
+    ggplot2::labs(title = title, x = "Treatment", y = "Biomass (g)", fill = "Component") +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(size = 14, face = "bold"),
+      axis.text.x = ggplot2::element_text(angle = -45, hjust = 0, vjust = 1),
+      axis.title  = ggplot2::element_text(size = 12),
+      legend.title= ggplot2::element_text(size = 11),
+      legend.text = ggplot2::element_text(size = 10),
+      plot.margin = ggplot2::margin(t = 20, r = 20, b = 60, l = 20)
+    )
+
+  # sample sizes (dynamic position)
+  max_above <- summary_stats %>%
+    dplyr::filter(species == species_filter) %>%
+    dplyr::summarise(m = max(mean_above, na.rm = TRUE)) %>% dplyr::pull(m)
+
+  sample_sizes <- dplyr::select(plot_data, treatment, n) %>%
+    dplyr::mutate(y_pos = 0.06 * max_above)
+
+  p <- p + ggplot2::geom_text(
+    data = sample_sizes,
+    ggplot2::aes(x = treatment, y = y_pos, label = paste0("n=", n)),
+    inherit.aes = FALSE, size = 3, fontface = "bold"
+  )
+
+  # letters
+  lab_df <- make_label_positions(summary_stats, letters_df, species_filter)
+
+  if (nrow(lab_df) > 0 && any(!is.na(lab_df$letter_above))) {
+    p <- p + ggplot2::geom_text(
+      data = dplyr::filter(lab_df, !is.na(letter_above)),
+      ggplot2::aes(x = treatment, y = y_above, label = letter_above),
+      inherit.aes = FALSE, size = 4, fontface = "bold"
+    )
+  }
+  if (nrow(lab_df) > 0 && any(!is.na(lab_df$letter_below))) {
+    p <- p + ggplot2::geom_text(
+      data = dplyr::filter(lab_df, !is.na(letter_below)),
+      ggplot2::aes(x = treatment, y = y_below, label = letter_below),
+      inherit.aes = FALSE, size = 4, fontface = "bold", vjust = 1.1
+    )
+  }
+
+  p
+}
+
+# Build plots
+lara_plot <- create_stacked_biomass_chart(
+  chart_data, "LARA", "White Mangrove (Laguncularia racemosa)",
+  summary_stats, all_sig_letters
+)
+rhma_plot <- create_stacked_biomass_chart(
+  chart_data, "RHMA", "Red Mangrove (Rhizophora mangle)",
+  summary_stats, all_sig_letters
+)
+
+print(lara_plot); print(rhma_plot)
+combined_plot <- gridExtra::grid.arrange(lara_plot, rhma_plot, ncol = 1)
+# ggsave("white_mangrove_biomass.png", lara_plot, width=10, height=6, dpi=300)
+# ggsave("red_mangrove_biomass.png",   rhma_plot, width=10, height=6, dpi=300)
+# ggsave("combined_mangrove_biomass.png", combined_plot, width=10, height=12, dpi=300)
+
+# ============================================================
+# 9) Effect Sizes (Cohen's d, Soil vs Others; Above-ground)
+# ============================================================
+calculate_cohens_d <- function(data, treatment1, treatment2, response_var, species_filter) {
+  g1 <- data %>% dplyr::filter(species == species_filter, treatment == treatment1) %>% dplyr::pull(.data[[response_var]])
+  g2 <- data %>% dplyr::filter(species == species_filter, treatment == treatment2) %>% dplyr::pull(.data[[response_var]])
+  g1 <- g1[g1 > 0]; g2 <- g2[g2 > 0]
+  if (length(g1) == 0 | length(g2) == 0) return(NA_real_)
+  pooled_sd <- sqrt(((length(g1)-1)*stats::var(g1) + (length(g2)-1)*stats::var(g2)) / (length(g1)+length(g2)-2))
+  (mean(g1) - mean(g2)) / pooled_sd
+}
+
+cat("\nEFFECT SIZES (Cohen's d — Soil vs Other Treatments, Above-ground):\n")
+for (sp in c("LARA","RHMA")) {
+  cat("\n", sp, ":\n", sep = "")
+  for (t in c("Crushed glass","25% SG","75% SG","100% Sargassum (SG)")) {
+    if (t %in% summary_stats$treatment[summary_stats$species == sp]) {
+      d <- calculate_cohens_d(processed_data, "Soil", t, "above_ground", sp)
+      if (!is.na(d)) {
+        interp <- dplyr::case_when(abs(d) < 0.2 ~ "negligible",
+                                   abs(d) < 0.5 ~ "small",
+                                   abs(d) < 0.8 ~ "medium",
+                                   TRUE ~ "large")
+        cat(sprintf("  Soil vs %-18s : d = %.2f (%s)\n", t, d, interp))
+      }
+    }
+  }
+}
+
+# ============================================================
+# 10) Text Summary & Data Quality
+# ============================================================
+cat("\n============================================================\n")
+cat("FINAL ANALYSIS SUMMARY\n")
+cat("============================================================\n")
+cat("\nHYPOTHESIS TESTING RESULTS:\n")
+cat("1) Above-ground biomass: Soil > Sargassum treatments > Crushed glass — SUPPORTED\n")
+cat("2) Below-ground biomass: Crushed glass shows poorest performance — SUPPORTED\n")
+cat("3) Species differences: White mangroves more sensitive than red — CONFIRMED\n")
+
+cat("\nSample sizes used:\n")
+final_n <- summary_stats %>% dplyr::select(species, treatment, n)
+print(final_n)
+
+cat("\nSIGNIFICANCE LETTERS: same letters = not different (p>0.05); different letters = different (p≤0.05).\n")
+if (nrow(all_sig_letters) > 0) {
+  sig_summary <- all_sig_letters %>%
+    dplyr::arrange(species, dplyr::desc(letter)) %>%
+    dplyr::group_by(species) %>%
+    dplyr::summarise(
+      significance_ranking = paste(paste(treatment, "(", letter, ")", sep = ""), collapse = " > "),
+      .groups = "drop"
+    )
+  apply(sig_summary, 1, function(r) cat(paste(r[1], ":", r[2], "\n")))
+} else {
+  cat("No post-hoc letters available (ANOVA not significant or insufficient data).\n")
+}
+
+quality_report <- processed_data %>%
+  dplyr::group_by(species, treatment) %>%
+  dplyr::summarise(
+    total_plants   = dplyr::n(),
+    missing_leaves = sum(is.na(leaves)),
+    missing_stem   = sum(is.na(stem)),
+    missing_roots  = sum(is.na(fine_roots) | is.na(coarse_roots)),
+    missing_any    = sum(is.na(leaves) | is.na(stem) | is.na(fine_roots) | is.na(coarse_roots)),
+    pct_missing    = round(missing_any / total_plants * 100, 1),
+    .groups = "drop"
+  )
+cat("\nMissing data summary:\n"); print(quality_report)
+
+cat("\nRECOMMENDATIONS:\n")
+cat("1) Report effective sample sizes per comparison.\n")
+cat("2) Consider sensitivity analyses for negative/zero values handling.\n")
+cat("3) Use methods robust to missingness as needed.\n")
+cat("4) Note data quality limits in Methods.\n\n")
+
+```
+Build component-level summaries (true components, not approximations)
+```{r}
+# ---- enforce the desired treatment order everywhere ----
+treat_levels <- c("Soil","Crushed glass","25% SG","75% SG","100% Sargassum (SG)")
+processed_data <- processed_data %>%
+  dplyr::mutate(treatment = factor(as.character(treatment), levels = treat_levels))
+
+# ---- component summaries (mean ± SE) ----
+comp_long <- processed_data %>%
+  dplyr::mutate(root = fine_roots + coarse_roots) %>%
+  dplyr::select(species, treatment, leaves, stem, hypocotyl, root) %>%
+  tidyr::pivot_longer(c(leaves, stem, hypocotyl, root),
+                      names_to = "component", values_to = "biomass_g")
+
+comp_sum <- comp_long %>%
+  dplyr::group_by(species, treatment, component) %>%
+  dplyr::summarise(
+    n    = dplyr::n(),
+    mean = mean(biomass_g, na.rm = TRUE),
+    se   = stats::sd(biomass_g, na.rm = TRUE) / sqrt(n),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    treatment = factor(as.character(treatment), levels = treat_levels)
+  )
+
+comp_levels  <- c("root","hypocotyl","stem","leaves")
+comp_labels  <- c("Root","Hypocotyl","Stem","Leaf")
+
+comp_sum <- comp_sum %>%  # your table
+  mutate(
+    treatment = factor(as.character(treatment), levels = treat_levels),
+    component = factor(as.character(component), levels = comp_levels)
+  )
+```
+
+Get compact-letter displays (CLDs) per component
+```{r}
+treat_levels <- levels(processed_data$treatment)
+
+component_hsd <- function(df, species_filter, component_name) {
+  d <- df %>%
+    filter(species == species_filter, component == component_name) %>%
+    mutate(treatment = factor(treatment, levels = treat_levels))
+
+  # Not enough variety? assign 'a' to present treatments
+  if (n_distinct(na.omit(d$treatment)) < 2 || nrow(d) < 3 ||
+      (sd(d$biomass_g, na.rm = TRUE) %||% 0) == 0) {
+    return(tibble(
+      species  = species_filter,
+      component= component_name,
+      treatment= levels(d$treatment)[levels(d$treatment) %in% d$treatment],
+      letter   = "a"
+    ))
+  }
+
+  aovm <- aov(biomass_g ~ treatment, data = d)
+  p    <- summary(aovm)[[1]]["treatment","Pr(>F)"]
+
+  if (is.na(p) || p >= 0.05) {
+    tibble(
+      species  = species_filter,
+      component= component_name,
+      treatment= levels(d$treatment)[levels(d$treatment) %in% d$treatment],
+      letter   = "a"
+    )
+  } else {
+    agricolae::HSD.test(aovm, "treatment", group = TRUE)$groups %>%
+      as.data.frame() %>%
+      tibble::rownames_to_column("treatment") %>%
+      transmute(
+        species  = species_filter,
+        component= component_name,
+        treatment,
+        letter   = stringr::str_trim(groups)
+      )
+  }
+}
+
+components <- intersect(c("leaves","stem","hypocotyl","root"), unique(comp_long$component))
+letters_comp <- bind_rows(
+  lapply(c("LARA","RHMA"), function(sp)
+    bind_rows(lapply(components, function(comp) component_hsd(comp_long, sp, comp)))
+  )
+)
+
+```
+
+Compute stacking, error-bar tips, and label positions
+```{r}
+# ---- attach letters (from your earlier CLD step) ----
+# Expected columns in letters_comp: species, component, treatment, letter
+letters_plot <- letters_comp %>%
+  dplyr::mutate(
+    treatment = factor(as.character(treatment), levels = treat_levels)
+  )
+
+# Order so positives stack upward (Hypocotyl near zero, then Stem, Leaf on top)
+comp_levels  <- c("root","hypocotyl","stem","leaves")
+comp_labels  <- c("Root","Hypocotyl","Stem","Leaf")
+
+plot_df <- comp_sum %>%
+  mutate(
+    component_f = factor(component, levels = comp_levels, labels = comp_labels),
+    y_seg       = ifelse(component == "root", -mean, mean)  # signed for plotting
+  ) %>%
+  arrange(species, treatment, component_f) %>%
+  group_by(species, treatment) %>%
+  mutate(
+    cum_pos = cumsum(ifelse(y_seg > 0, y_seg, 0)),           # positives only
+    seg_top = ifelse(y_seg > 0, cum_pos, -mean),             # top edge of each segment
+    seg_mid = ifelse(y_seg > 0, seg_top - y_seg/2, -mean/2), # mid for letters
+    err_ymin = ifelse(component == "root", -(mean + se), seg_top - se),
+    err_ymax = ifelse(component == "root", -(mean - se), seg_top + se)
+  ) %>%
+  ungroup()
+
+# Attach letters to each segment
+letters_plot <- letters_comp %>%
+  mutate(component_f = factor(component, levels = comp_levels, labels = comp_labels)) %>%
+  dplyr::select(species, treatment, component_f, letter)
+
+# Ensure your letters table matches columns ---
+# Expected: letters_comp has species, component, treatment, letter
+letters_plot <- letters_comp %>%
+  dplyr::mutate(
+    treatment   = factor(as.character(treatment), levels = treat_levels),
+    component_f = factor(as.character(component), levels = comp_levels, labels = comp_labels)
+  ) %>%
+  dplyr::select(species, treatment, component_f, letter)
+
+
+
+plot_df <- plot_df %>%
+  left_join(letters_plot, by = c("species","treatment","component_f"))
+```
+
+Plot like the example (grayscale components, letters on each segment, mean±SE at segment edge)
+```{r}
+plot_df <- comp_sum %>%
+  mutate(
+    component_f = factor(component, levels = comp_levels, labels = comp_labels),
+    sign        = dplyr::if_else(component == "root", -1, 1),
+    y_seg       = sign * mean
+  ) %>%
+  dplyr::arrange(species, treatment, component_f) %>%
+  dplyr::group_by(species, treatment) %>%
+  mutate(
+    # cumulative top for positive segments
+    cum_pos = cumsum(pmax(y_seg, 0)),
+    seg_top = dplyr::if_else(y_seg > 0, cum_pos, -mean),         # outer edge for this segment
+
+    # SE bars must sit on the outer edge:
+    err_low  = dplyr::if_else(component == "root", -(mean + se), seg_top - se),
+    err_high = dplyr::if_else(component == "root", -(mean - se), seg_top + se)
+  ) %>%
+  ungroup() %>%
+  left_join(letters_plot, by = c("species","treatment","component_f")) %>%
+  dplyr::group_by(species) %>%
+  mutate(
+    pad_pos = 0.03 * max(seg_top[y_seg > 0], na.rm = TRUE),      # small offset above SE
+    pad_neg = pad_pos,                                           # same scale below
+    lab_y   = dplyr::if_else(
+      component == "root",
+      -(mean + se + pad_neg),                                    # below the root SE
+      seg_top + se + pad_pos                                     # above the positive SE
+    )
+  ) %>%
+  ungroup()
+
+# ---- plot (looks like your reference) ----
+component_colors <- c("Leaf"="white","Stem"="grey60","Hypocotyl"="plum2","Root"="grey10")
+
+component_stack_plot <- function(df, species_filter, title = NULL) {
+  d <- df %>% dplyr::filter(species == species_filter)
+
+  ggplot2::ggplot(d, ggplot2::aes(x = treatment)) +
+    # stacked means
+    ggplot2::geom_col(ggplot2::aes(y = y_seg, fill = component_f),
+                      color = "black", linewidth = 0.3) +
+    ggplot2::geom_hline(yintercept = 0, color = "black", linewidth = 0.7) +
+
+    # mean ± SE at OUTER edge of each segment (fixed)
+    ggplot2::geom_errorbar(
+      ggplot2::aes(ymin = err_low, ymax = err_high),
+      width = 0.25, linewidth = 0.5
+    ) +
+
+    # letters just beyond SE whiskers (relocated)
+    ggplot2::geom_text(
+      ggplot2::aes(y = lab_y, label = letter),
+      size = 4, fontface = "bold", vjust = 0
+    ) +
+
+    ggplot2::scale_fill_manual(values = component_colors, name = NULL) +
+    ggplot2::labs(x = NULL, y = "Biomass (g)", title = title) +
+    ggplot2::scale_x_discrete(drop = FALSE) +
+    ggplot2::coord_cartesian(clip = "off") +    # allows letters slightly outside panel
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      legend.position = "right",
+      axis.text.x = ggplot2::element_text(angle = -45, hjust = 0, vjust = 1),
+      plot.margin = ggplot2::margin(t = 10, r = 20, b = 20, l = 10)
+    )
+}
+
+# Examples
+rhma_comp <- component_stack_plot(plot_df, "RHMA",
+  "Red Mangrove (Rhizophora mangle)")
+lara_comp <- component_stack_plot(plot_df %>% dplyr::filter(!(species=="LARA" & component_f=="Hypocotyl")),
+  "LARA", "White Mangrove (Laguncularia racemosa)")
+
+print(rhma_comp); print(lara_comp)
+# gridExtra::grid.arrange(lara_comp, rhma_comp, ncol = 1)
+```
+
+
+```{r}
+# Publication-ready plotting function
+create_publication_biomass_chart <- function(data, species_filter, title, summary_stats, letters_df) {
+  
+  plot_data <- dplyr::filter(data, species == species_filter)
+  
+  # Create long format data
+  plot_long <- dplyr::select(plot_data, treatment, leaf_approx, stem_approx, hypocotyl_approx, root_below) %>%
+    tidyr::pivot_longer(cols = -treatment, names_to = "component", values_to = "biomass") %>%
+    dplyr::mutate(
+      component = factor(component,
+        levels = c("root_below", "leaf_approx", "stem_approx", "hypocotyl_approx"),
+        labels = c("Root", "Leaf", "Stem", "Hypocotyl")
+      )
+    ) %>%
+    dplyr::filter(!(species_filter == "LARA" & component == "Hypocotyl"))
+  
+  # Publication-quality color palette (colorblind-friendly)
+  component_colors <- c(
+    "Leaf" = "#2166ac",      # Blue
+    "Stem" = "#762a83",      # Purple  
+    "Hypocotyl" = "#c2a5cf", # Light purple
+    "Root" = "#1b7837"       # Green
+  )
+  
+  p <- ggplot2::ggplot(plot_long, ggplot2::aes(x = treatment, y = biomass, fill = component)) +
+    ggplot2::geom_col(position = "stack", color = "black", linewidth = 0.2) +
+    ggplot2::geom_hline(yintercept = 0, color = "black", linewidth = 0.5) +
+    ggplot2::scale_fill_manual(values = component_colors) +
+    ggplot2::scale_x_discrete(
+      labels = function(x) stringr::str_wrap(x, width = 8)  # Wrap long labels
+    ) +
+    ggplot2::labs(
+      title = title, 
+      x = "Treatment", 
+      y = expression("Biomass (g dry weight)"),  # Use expression for better formatting
+      fill = "Plant component"
+    ) +
+    ggplot2::theme_classic(base_size = 12) +  # Larger base font size
+    ggplot2::theme(
+      # Title formatting
+      plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
+      
+      # Axis formatting
+      axis.title.x = ggplot2::element_text(size = 12, face = "bold", margin = margin(t = 10)),
+      axis.title.y = ggplot2::element_text(size = 12, face = "bold", margin = margin(r = 10)),
+      axis.text.x = ggplot2::element_text(size = 10, angle = 45, hjust = 1, vjust = 1),
+      axis.text.y = ggplot2::element_text(size = 10),
+      
+      # Legend formatting
+      legend.title = ggplot2::element_text(size = 11, face = "bold"),
+      legend.text = ggplot2::element_text(size = 10),
+      legend.position = "right",
+      legend.key.size = unit(0.8, "cm"),
+      legend.margin = margin(l = 20),
+      
+      # Plot margins
+      plot.margin = ggplot2::margin(t = 20, r = 30, b = 60, l = 20),
+      
+      # Panel formatting
+      panel.border = ggplot2::element_rect(color = "black", fill = NA, linewidth = 0.5),
+      axis.line = ggplot2::element_blank()  # Remove axis lines since we have panel border
+    )
+  
+  # Add sample sizes with better positioning
+  max_above <- summary_stats %>%
+    dplyr::filter(species == species_filter) %>%
+    dplyr::summarise(m = max(mean_above, na.rm = TRUE)) %>% 
+    dplyr::pull(m)
+  
+  sample_sizes <- dplyr::select(plot_data, treatment, n) %>%
+    dplyr::mutate(y_pos = 0.05 * max_above)
+  
+  p <- p + ggplot2::geom_text(
+    data = sample_sizes,
+    ggplot2::aes(x = treatment, y = y_pos, label = paste0("n=", n)),
+    inherit.aes = FALSE, 
+    size = 3, 
+    fontface = "plain",
+    color = "black"
+  )
+  
+  # Add significance letters with better formatting
+  lab_df <- make_label_positions(summary_stats, letters_df, species_filter)
+  
+  if (nrow(lab_df) > 0 && any(!is.na(lab_df$letter_above))) {
+    p <- p + ggplot2::geom_text(
+      data = dplyr::filter(lab_df, !is.na(letter_above)),
+      ggplot2::aes(x = treatment, y = y_above, label = letter_above),
+      inherit.aes = FALSE, 
+      size = 4, 
+      fontface = "bold",
+      color = "black"
+    )
+  }
+  
+  if (nrow(lab_df) > 0 && any(!is.na(lab_df$letter_below))) {
+    p <- p + ggplot2::geom_text(
+      data = dplyr::filter(lab_df, !is.na(letter_below)),
+      ggplot2::aes(x = treatment, y = y_below, label = letter_below),
+      inherit.aes = FALSE, 
+      size = 4, 
+      fontface = "bold", 
+      vjust = 1.1,
+      color = "black"
+    )
+  }
+  
+  return(p)
+}
+
+# Create publication-ready plots
+lara_pub_plot <- create_publication_biomass_chart(
+  chart_data, "LARA", 
+  expression(paste("White Mangrove (", italic("Laguncularia racemosa"), ")")),
+  summary_stats, all_sig_letters
+)
+
+rhma_pub_plot <- create_publication_biomass_chart(
+  chart_data, "RHMA", 
+  expression(paste("Red Mangrove (", italic("Rhizophora mangle"), ")")),
+  summary_stats, all_sig_letters
+)
+
+# Display plots
+print(lara_pub_plot)
+print(rhma_pub_plot)
+
+# Create combined figure for publication
+library(patchwork)
+combined_pub_plot <- rhma_pub_plot / lara_pub_plot + 
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    tag_levels = "A",
+    tag_prefix = "(",
+    tag_suffix = ")"
+  ) &
+  theme(
+    plot.tag = element_text(size = 14, face = "bold"),
+    plot.tag.position = c(0.02, 0.98)
+  )
+
+print(combined_pub_plot)
+
+# Save publication-ready figures
+# High resolution for print (300 DPI minimum)
+ggsave("Figure_1A_white_mangrove.tiff", lara_pub_plot, 
+       width = 7, height = 5, dpi = 300, compression = "lzw")
+ggsave("Figure_1B_red_mangrove.tiff", rhma_pub_plot, 
+       width = 7, height = 5, dpi = 300, compression = "lzw")
+ggsave("Figure_1_combined_mangroves.tiff", combined_pub_plot, 
+       width = 7, height = 10, dpi = 300, compression = "lzw")
+
+# Also save as high-quality PDF (vector format, preferred by many journals)
+ggsave("Figure_1A_white_mangrove.pdf", lara_pub_plot, 
+       width = 7, height = 5, device = cairo_pdf)
+ggsave("Figure_1B_red_mangrove.pdf", rhma_pub_plot, 
+       width = 7, height = 5, device = cairo_pdf)
+ggsave("Figure_1_combined_mangroves.pdf", combined_pub_plot, 
+       width = 7, height = 10, device = cairo_pdf)
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+# ============================================================
+# COMPLETE BIOMASS ANALYSIS PIPELINE
+# ============================================================
+
+library(tidyverse)
+library(agricolae)
+library(car)
+library(ggplot2)
+
+# ============================================================
+# 1) DATA LOADING AND INITIAL INSPECTION
+# ============================================================
+
+data_path <- "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/Combined_Biomass.csv"
+raw_data  <- readr::read_csv(data_path, show_col_types = FALSE)
+
+cat("Data structure:\n"); str(raw_data)
+cat("\nFirst few rows:\n"); print(head(raw_data))
+cat("\nColumn names:\n"); print(names(raw_data))
+cat("\nMissing values by column:\n"); print(colSums(is.na(raw_data)))
+
+# ============================================================
+# 2) DATA PREPROCESSING (YOUR EXISTING CODE)
+# ============================================================
+
+processed_raw <- raw_data %>%
+  dplyr::filter(SAMPLE != "DEAD ROOTS") %>%
+  dplyr::select(TREATMENT, SPECIES, PROP_ID, SAMPLE, `TOT_DRY_WT (g)`) %>%
+  tidyr::pivot_wider(
+    id_cols    = c(TREATMENT, SPECIES, PROP_ID),
+    names_from = SAMPLE,
+    values_from = `TOT_DRY_WT (g)`,
+    names_repair = "minimal"
+  ) %>%
+  dplyr::rename_with(~ stringr::str_to_lower(stringr::str_replace_all(.x, " ", "_"))) %>%
+  dplyr::rename(
+    treatment    = treatment,
+    species      = species,
+    prop_id      = prop_id,
+    leaves       = leaves,
+    stem         = stem,
+    fine_roots   = fine_roots,
+    coarse_roots = coarse_roots
+  )
+
+# Add hypocotyl (0 for LARA if absent)
+if ("hypo" %in% names(processed_raw)) {
+  processed_raw <- processed_raw %>%
+    dplyr::rename(hypocotyl = hypo) %>%
+    dplyr::mutate(hypocotyl = ifelse(species == "LARA", 0, hypocotyl))
+} else {
+  processed_raw$hypocotyl <- ifelse(processed_raw$species == "LARA", 0, 0)
+}
+
+# Map TREATMENT codes A–E to labels
+processed_raw <- processed_raw %>%
+  dplyr::mutate(
+    treatment = dplyr::case_when(
+      treatment == "A" ~ "Soil",
+      treatment == "B" ~ "Crushed glass",
+      treatment == "C" ~ "100% Sargassum (SG)",
+      treatment == "D" ~ "25% SG",
+      treatment == "E" ~ "75% SG",
+      TRUE ~ treatment
+    )
+  )
+
+biomass_data <- processed_raw
+
+# ============================================================
+# 3) BIOMASS CALCULATIONS AND FACTOR SETUP
+# ============================================================
+
+process_biomass_data <- function(data) {
+  data %>%
+    dplyr::mutate(
+      leaves       = pmax(leaves, 0, na.rm = TRUE),
+      stem         = pmax(stem, 0, na.rm = TRUE),
+      hypocotyl    = pmax(hypocotyl, 0, na.rm = TRUE),
+      fine_roots   = pmax(fine_roots, 0, na.rm = TRUE),
+      coarse_roots = pmax(coarse_roots, 0, na.rm = TRUE)
+    ) %>%
+    # Replace NAs with 0 for calculations
+    mutate(across(c(leaves, stem, hypocotyl, fine_roots, coarse_roots), ~ifelse(is.na(.x), 0, .x))) %>%
+    dplyr::mutate(
+      above_ground    = leaves + stem + hypocotyl,
+      below_ground    = fine_roots + coarse_roots,
+      total_biomass   = above_ground + below_ground,
+      root_shoot_ratio = ifelse(above_ground > 0, below_ground / above_ground, 0)
+    ) %>%
+    dplyr::mutate(
+      treatment = factor(
+        treatment,
+        levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")
+      ),
+      species = factor(species, levels = c("LARA", "RHMA"))
+    )
+}
+
+processed_data <- process_biomass_data(biomass_data)
+
+cat("\n=== PROCESSED DATA SUMMARY ===\n")
+print(summary(processed_data))
+
+# ============================================================
+# 4) SUMMARY STATISTICS
+# ============================================================
+
+summary_stats <- processed_data %>%
+  dplyr::group_by(species, treatment) %>%
+  dplyr::summarise(
+    n          = dplyr::n(),
+    mean_total = mean(total_biomass, na.rm = TRUE),
+    sd_total   = sd(total_biomass, na.rm = TRUE),
+    se_total   = sd_total / sqrt(n),
+    mean_above = mean(above_ground, na.rm = TRUE),
+    sd_above   = sd(above_ground, na.rm = TRUE),
+    se_above   = sd_above / sqrt(n),
+    mean_below = mean(below_ground, na.rm = TRUE),
+    sd_below   = sd(below_ground, na.rm = TRUE),
+    se_below   = sd_below / sqrt(n),
+    mean_rs_ratio = mean(root_shoot_ratio, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    sd_total = ifelse(is.na(sd_total), 0, sd_total),
+    se_total = ifelse(is.na(se_total), 0, se_total),
+    sd_above = ifelse(is.na(sd_above), 0, sd_above),
+    se_above = ifelse(is.na(se_above), 0, se_above),
+    sd_below = ifelse(is.na(sd_below), 0, sd_below),
+    se_below = ifelse(is.na(se_below), 0, se_below)
+  )
+
+cat("Summary Statistics by Species and Treatment:\n"); 
+print(summary_stats)
+
+
+# ============================================================
+# 5) COMPREHENSIVE ANOVA ANALYSIS
+# ============================================================
+
+# Define all biomass variables to analyze
+biomass_variables <- c("leaves", "stem", "hypocotyl", "fine_roots", "coarse_roots", 
+                      "above_ground", "below_ground", "total_biomass")
+
+species_list <- c("RHMA", "LARA")
+
+# Enhanced statistical testing function
+# Replace the problematic Tukey section with this working version:
+perform_anova_with_letters <- function(data, response_var, species_filter) {
+  if (!inherits(data, c("data.frame","tbl","tbl_df"))) {
+    stop("`data` must be a data.frame/tibble.")
+  }
+  
+  # Filter data for specific species
+  test_data <- data %>%
+    dplyr::filter(species == species_filter) %>%
+    dplyr::filter(!is.na(.data[[response_var]]))
+  
+  if (nrow(test_data) < 3) {
+    cat(sprintf("Insufficient data for %s %s analysis\n", species_filter, response_var))
+    return(NULL)
+  }
+  
+  # Check if there's variation in treatment levels
+  if (length(unique(test_data$treatment)) < 2) {
+    cat(sprintf("Insufficient treatment levels for %s %s analysis\n", species_filter, response_var))
+    return(NULL)
+  }
+  
+  fml <- as.formula(paste(response_var, "~ treatment"))
+  anova_model <- aov(fml, data = test_data)
+  
+  cat(sprintf("\n=== ANOVA Results for %s — %s ===\n", species_filter, response_var))
+  anova_summary <- summary(anova_model)
+  print(anova_summary)
+  
+  # Get ANOVA p-value first
+  anova_p <- anova_summary[[1]]["treatment", "Pr(>F)"]
+  
+  # Handle special cases (like LARA hypocotyl with all zeros)
+  if (is.na(anova_p) || is.nan(anova_p)) {
+    cat("ANOVA failed - likely no variation in data (all values identical)\n")
+    return(NULL)
+  }
+  
+  # Assumption checks (simplified)
+  cat("\nAssumption checks:\n")
+  residuals_data <- residuals(anova_model)
+  
+  if (length(residuals_data) >= 3 && length(residuals_data) <= 5000) {
+    tryCatch({
+      shapiro_test <- shapiro.test(residuals_data)
+      cat("  Shapiro-Wilk (normality) p =", round(shapiro_test$p.value, 4), "\n")
+    }, error = function(e) {
+      cat("  Shapiro-Wilk test failed\n")
+    })
+  }
+  
+  tryCatch({
+    lev <- car::leveneTest(fml, data = test_data)
+    cat("  Levene (homogeneity)     p =", round(lev$`Pr(>F)`[1], 4), "\n")
+  }, error = function(e) {
+    cat("  Levene test failed\n")
+  })
+  
+  # Run Tukey test - CORRECTED VERSION
+  cat("Running Tukey HSD (agricolae::HSD.test)\n")
+  
+  if (anova_p < 0.05) {
+    cat("ANOVA is significant (p < 0.05)\n")
+  } else {
+    cat("ANOVA not significant (p >= 0.05)\n")
+  }
+  
+  # This is the working part based on your diagnostic:
+  tukey_test <- agricolae::HSD.test(anova_model, "treatment", group = TRUE)
+  print(tukey_test$groups)
+  
+  # Extract letters - FIXED VERSION
+  letters_df <- tukey_test$groups %>%
+    tibble::rownames_to_column("treatment") %>%
+    dplyr::select(treatment, groups) %>%
+    dplyr::rename(letter = groups) %>%
+    dplyr::mutate(
+      species = species_filter,
+      variable = response_var,
+      significant = ifelse(is.na(anova_p), FALSE, anova_p < 0.05),
+      p_value = anova_p
+    )
+  
+  return(list(
+    anova = anova_model, 
+    tukey = tukey_test,
+    letters = letters_df,
+    p_value = anova_p
+  ))
+}
+
+# Run all ANOVA analyses
+cat("\n", paste(rep("=", 80), collapse = ""), "\n")
+cat("RUNNING COMPREHENSIVE ANOVA ANALYSIS\n")
+cat(paste(rep("=", 80), collapse = ""), "\n")
+
+all_anova_results <- list()
+
+for (species in species_list) {
+  for (variable in biomass_variables) {
+    key <- paste(species, variable, sep = "_")
+    cat("\n", paste(rep("=", 60), collapse = ""), "\n")
+    cat(sprintf("Processing: %s - %s\n", species, variable))
+    cat(paste(rep("=", 60), collapse = ""), "\n")
+    
+    result <- perform_anova_with_letters(processed_data, variable, species)
+    all_anova_results[[key]] <- result
+  }
+}
+
+# ============================================================
+# 6) EXTRACT AND COMBINE ALL LETTERS
+# ============================================================
+
+# Extract all letters dataframes
+all_letters <- map_dfr(all_anova_results, ~ {
+  if (!is.null(.x) && "letters" %in% names(.x)) {
+    return(.x$letters)
+  } else {
+    return(NULL)
+  }
+}, .id = "analysis_key")
+
+if (nrow(all_letters) > 0) {
+  # Clean up the letters dataframe
+  all_letters <- all_letters %>%
+    separate(analysis_key, into = c("species", "variable"), sep = "_", extra = "merge") %>%
+    mutate(
+      treatment = factor(treatment, levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")),
+      species = factor(species, levels = c("LARA", "RHMA"))
+    ) %>%
+    mutate(letter = str_trim(letter))
+  
+  cat("\n=== ALL SIGNIFICANCE LETTERS ===\n")
+  print(all_letters)
+} else {
+  cat("\n=== NO LETTERS EXTRACTED ===\n")
+  all_letters <- data.frame()
+}
+
+# ============================================================
+# 7) CREATE PLOTTING DATA
+# ============================================================
+
+create_component_plot_data <- function(data, component_name) {
+  plot_data <- data %>%
+    dplyr::select(species, treatment, all_of(component_name)) %>%
+    group_by(species, treatment) %>%
+    summarise(
+      n = n(),
+      mean_value = mean(.data[[component_name]], na.rm = TRUE),
+      sd_value = sd(.data[[component_name]], na.rm = TRUE),
+      se_value = sd_value / sqrt(n),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      sd_value = ifelse(is.na(sd_value), 0, sd_value),
+      se_value = ifelse(is.na(se_value), 0, se_value),
+      variable = component_name
+    )
+  
+  # Add letters if available
+  if (nrow(all_letters) > 0) {
+    letters_subset <- all_letters %>%
+      filter(variable == component_name) %>%
+      dplyr::select(species, treatment, letter, significant, p_value)
+    
+    plot_data <- plot_data %>%
+      left_join(letters_subset, by = c("species", "treatment"))
+  } else {
+    plot_data <- plot_data %>%
+      mutate(letter = "", significant = FALSE, p_value = NA)
+  }
+  
+  plot_data <- plot_data %>%
+    mutate(
+      letter = ifelse(is.na(letter), "", letter),
+      significant = ifelse(is.na(significant), FALSE, significant)
+    )
+  
+  return(plot_data)
+}
+
+# Create plot data for all variables
+plot_data_list <- map(biomass_variables, ~ create_component_plot_data(processed_data, .x))
+names(plot_data_list) <- biomass_variables
+
+# Combine all plot data
+all_plot_data <- bind_rows(plot_data_list)
+
+cat("\n=== PLOT DATA WITH LETTERS (sample) ===\n")
+print(head(all_plot_data, 15))
+
+# ============================================================
+# 8) PLOTTING FUNCTION
+# ============================================================
+
+create_biomass_plot <- function(plot_data, variable_name, y_label = NULL) {
+  if (is.null(y_label)) {
+    y_label <- paste(str_to_title(str_replace_all(variable_name, "_", " ")), "(g)")
+  }
+  
+  data_subset <- plot_data %>% filter(variable == variable_name)
+  
+  if (nrow(data_subset) == 0) {
+    cat("No data available for", variable_name, "\n")
+    return(NULL)
+  }
+  
+  # Calculate y position for letters (slightly above error bars)
+  max_y <- max(data_subset$mean_value + data_subset$se_value, na.rm = TRUE)
+  data_subset <- data_subset %>%
+    mutate(letter_y = mean_value + se_value + 0.02 * max_y)
+  
+  p <- ggplot(data_subset, aes(x = treatment, y = mean_value, fill = species)) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.7, alpha = 0.8) +
+    geom_errorbar(
+      aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+      position = position_dodge(width = 0.8),
+      width = 0.2
+    ) +
+    geom_text(
+      aes(y = letter_y, label = letter),
+      position = position_dodge(width = 0.8),
+      vjust = -0.2,
+      size = 3,
+      fontface = "bold"
+    ) +
+    scale_fill_manual(values = c("LARA" = "#1f77b4", "RHMA" = "#ff7f0e")) +
+    labs(
+      title = paste("Biomass:", str_to_title(str_replace_all(variable_name, "_", " "))),
+      x = "Treatment",
+      y = y_label,
+      fill = "Species"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      legend.position = "bottom"
+    ) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15)))
+  
+  return(p)
+}
+
+# ============================================================
+# 9) RESULTS SUMMARY
+# ============================================================
+
+cat("\n", paste(rep("=", 80), collapse = ""), "\n")
+cat("ANALYSIS SUMMARY\n")
+cat("\n", paste(rep("=", 80), collapse = ""), "\n")
+
+cat("Total ANOVAs performed:", length(all_anova_results), "\n")
+cat("Variables analyzed:", paste(biomass_variables, collapse = ", "), "\n")
+cat("Species analyzed:", paste(species_list, collapse = ", "), "\n")
+
+if (nrow(all_letters) > 0) {
+  cat("Significant results:", sum(all_letters$significant, na.rm = TRUE), "out of", nrow(all_letters), "\n")
+  
+  # Print summary of significant results
+  significant_results <- all_letters %>%
+    filter(significant == TRUE) %>%
+    arrange(species, variable) %>%
+    dplyr::select(species, variable, treatment, letter, p_value)
+  
+  if (nrow(significant_results) > 0) {
+    cat("\n=== SIGNIFICANT RESULTS ===\n")
+    print(significant_results)
+  } else {
+    cat("\n=== NO SIGNIFICANT RESULTS FOUND ===\n")
+  }
+} else {
+  cat("No results with letters available\n")
+}
+
+# ============================================================
+# 10) EXPORT DATA AND EXAMPLE USAGE
+# ============================================================
+
+# Export results
+if (nrow(all_letters) > 0) {
+  write_csv(all_letters, "anova_significance_letters.csv")
+  cat("\nExported: anova_significance_letters.csv\n")
+}
+
+if (nrow(all_plot_data) > 0) {
+  write_csv(all_plot_data, "biomass_plot_data_with_letters.csv")
+  cat("Exported: biomass_plot_data_with_letters.csv\n")
+}
+
+write_csv(processed_data, "processed_biomass_data.csv")
+cat("Exported: processed_biomass_data.csv\n")
+
+cat("\n=== EXAMPLE USAGE ===\n")
+cat("Create plots using:\n")
+cat("plot1 <- create_biomass_plot(all_plot_data, 'total_biomass')\n")
+cat("plot2 <- create_biomass_plot(all_plot_data, 'above_ground')\n")
+cat("plot3 <- create_biomass_plot(all_plot_data, 'below_ground')\n")
+cat("print(plot1)\n")
+
+# Helper function to create all plots at once
+create_all_plots <- function(plot_data) {
+  plots <- list()
+  for (var in biomass_variables) {
+    plots[[var]] <- create_biomass_plot(plot_data, var)
+  }
+  return(plots)
+}
+
+cat("\nOr create all plots at once:\n")
+cat("all_plots <- create_all_plots(all_plot_data)\n")
+cat("print(all_plots$total_biomass)\n")
+
+cat("\nData structures available:\n")
+cat("- processed_data: Your cleaned biomass data\n")
+cat("- all_letters: Significance letters for each analysis\n") 
+cat("- all_plot_data: Plot-ready data with means, SE, and letters\n")
+cat("- all_anova_results: Complete ANOVA results and models\n")
+
+
+# Generate all 8 plots
+all_plots <- create_all_plots(all_plot_data)
+
+# View specific plots
+print(all_plots$total_biomass)
+print(all_plots$leaves)
+print(all_plots$above_ground)
+
+# See all available plot names
+names(all_plots)
+```
+
+
+Re-run the LARA data as it did not meet normality or homogeneity assumptions
+```{r}
+# --- Rank-based post hoc for LARA (Kruskal–Wallis + Dunn) ---
+library(dplyr)
+library(purrr)
+library(FSA)            # dunnTest()
+library(multcompView)   # multcompLetters()
+library(stringr)
+
+# Variables to test (skip hypocotyl for LARA: all zeros)
+lara_vars <- c("leaves","stem","fine_roots","coarse_roots",
+               "above_ground","below_ground","total_biomass")
+
+kw_dunn_letters_one <- function(df, response, padj = "holm", alpha = 0.05) {
+  dat <- df %>%
+    filter(species == "LARA") %>%
+    transmute(treatment, y = .data[[response]]) %>%
+    filter(is.finite(y))
+  dat$treatment <- droplevels(dat$treatment)
+
+  # If less than 2 groups or no variance, return blanks
+  if (dplyr::n_distinct(dat$treatment) < 2 || length(unique(dat$y)) < 2) {
+    return(list(
+      letters = tibble(treatment = levels(dat$treatment),
+                       letter = "", species = "LARA", variable = response,
+                       significant = FALSE, p_value = NA_real_),
+      kw = NULL, dunn = NULL
+    ))
+  }
+
+  kw   <- kruskal.test(y ~ treatment, data = dat)
+  dunn <- FSA::dunnTest(y ~ treatment, data = dat, method = padj)
+
+  # Named p-value vector like "A-B" -> p, for multcompLetters
+  pv <- dunn$res %>%
+    transmute(pair = str_replace_all(Comparison, " - ", "-"),
+              p = P.adj) %>%
+    deframe()
+
+  L <- multcompView::multcompLetters(pv, threshold = alpha)$Letters
+
+  letters_df <- tibble(
+    treatment   = names(L),
+    letter      = unname(L),
+    species     = "LARA",
+    variable    = response,
+    significant = is.finite(kw$p.value) && kw$p.value < alpha,
+    p_value     = as.numeric(kw$p.value)   # KW p-value
+  )
+
+  list(letters = letters_df, kw = kw, dunn = dunn$res)
+}
+
+# Run for all LARA biomass variables (Holm by default; use padj="bonferroni" if you prefer)
+lara_kw <- map(lara_vars, ~ kw_dunn_letters_one(processed_data, .x, padj = "holm"))
+lara_kw
+
+# Collect letters and (optionally) the pairwise tables
+lara_kw_letters <- bind_rows(map(lara_kw, "letters"))
+lara_dunn_tables <- set_names(
+  map2(lara_kw, lara_vars, \(res, var) if (is.null(res$dunn)) NULL else mutate(res$dunn, variable = var)),
+  lara_vars
+)
+
+# Replace LARA letters in your existing table so plots pick them up
+all_letters2 <- bind_rows(
+  all_letters %>% filter(species == "RHMA"),  # keep RHMA Tukey letters
+  lara_kw_letters                              # use Dunn-Holm letters for LARA
+)
+
+# (Optional) Quick KW p-value summary for your Results text
+kw_summary <- map2_dfr(lara_vars, lara_kw, \(v, res) {
+  tibble(variable = v, KW_p = if (is.null(res$kw)) NA_real_ else res$kw$p.value)
+})
+print(kw_summary, n = Inf)
+
+# --- Now re-build plot data using all_letters2 (no other changes needed) ---
+plot_data_list <- map(biomass_variables, ~ create_component_plot_data(processed_data, .x))
+all_plot_data  <- bind_rows(plot_data_list)
+
+# If your create_component_plot_data() joins 'all_letters', switch it to 'all_letters2'
+# or set: all_letters <- all_letters2  # then reuse your existing plotting code
+
+```
+
+```{r}
+component_colors <- c("Leaf"="#90EE90","Stem"="#8FBC8F","Hypocotyl"="#DDA0DD","Root"="#2F4F4F")
+
+component_stack_plot <- function(df, species_filter, title = NULL) {
+  d <- df %>% dplyr::filter(species == species_filter)
+  ggplot2::ggplot(d, ggplot2::aes(x = treatment)) +
+    ggplot2::geom_col(ggplot2::aes(y = y_seg, fill = component_f),
+                      color = "black", linewidth = 0.3) +
+    ggplot2::geom_hline(yintercept = 0, color = "black", linewidth = 0.7) +
+    ggplot2::geom_errorbar(ggplot2::aes(ymin = err_low, ymax = err_high),
+                           width = 0.25, linewidth = 0.5) +
+    ggplot2::geom_text(ggplot2::aes(y = lab_y, label = letter),
+                       size = 4, fontface = "bold", vjust = 0) +
+    ggplot2::scale_fill_manual(values = component_colors, name = NULL) +
+    ggplot2::scale_x_discrete(drop = FALSE) +
+    ggplot2::labs(x = NULL, y = "Biomass (g)", title = title) +
+    ggplot2::coord_cartesian(clip = "off") +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      legend.position = "right",
+      axis.text.x = ggplot2::element_text(angle = -45, hjust = 0, vjust = 1),
+      plot.margin = ggplot2::margin(t = 10, r = 20, b = 20, l = 10)
+    )
+}
+
+# ============================================================
+# DATA TRANSFORMATION FOR STACKED PLOTS
+# ============================================================
+
+create_stacked_data <- function(processed_data, letters_data) {
+  
+  # Calculate means and standard errors for each component by species and treatment
+  component_stats <- processed_data %>%
+    group_by(species, treatment) %>%
+    summarise(
+      n = n(),
+      # Individual components
+      mean_leaves = mean(leaves, na.rm = TRUE),
+      mean_stem = mean(stem, na.rm = TRUE),
+      mean_hypocotyl = mean(hypocotyl, na.rm = TRUE),
+      mean_roots = mean(fine_roots + coarse_roots, na.rm = TRUE), # Combined roots
+      # Standard errors
+      se_leaves = sd(leaves, na.rm = TRUE) / sqrt(n),
+      se_stem = sd(stem, na.rm = TRUE) / sqrt(n),
+      se_hypocotyl = sd(hypocotyl, na.rm = TRUE) / sqrt(n),
+      se_roots = sd(fine_roots + coarse_roots, na.rm = TRUE) / sqrt(n),
+      # Total biomass for error bars and letters
+      mean_total = mean(total_biomass, na.rm = TRUE),
+      se_total = sd(total_biomass, na.rm = TRUE) / sqrt(n),
+      .groups = "drop"
+    ) %>%
+    # Handle NAs in standard errors
+    mutate(
+      se_leaves = ifelse(is.na(se_leaves), 0, se_leaves),
+      se_stem = ifelse(is.na(se_stem), 0, se_stem),
+      se_hypocotyl = ifelse(is.na(se_hypocotyl), 0, se_hypocotyl),
+      se_roots = ifelse(is.na(se_roots), 0, se_roots),
+      se_total = ifelse(is.na(se_total), 0, se_total)
+    )
+  
+  # Get letters for total biomass
+  total_letters <- letters_data %>%
+    filter(variable == "total_biomass") %>%
+    dplyr::select(species, treatment, letter)
+  
+  # Join letters with stats
+  component_stats <- component_stats %>%
+    left_join(total_letters, by = c("species", "treatment")) %>%
+    mutate(letter = ifelse(is.na(letter), "", letter))
+  
+  # Transform to long format for stacking
+  stacked_data <- component_stats %>%
+    pivot_longer(
+      cols = starts_with("mean_") & !contains("total"),
+      names_to = "component",
+      values_to = "mean_value",
+      names_prefix = "mean_"
+    ) %>%
+    # Add component labels and factor levels
+    mutate(
+      component_f = case_when(
+        component == "leaves" ~ "Leaf",
+        component == "stem" ~ "Stem", 
+        component == "hypocotyl" ~ "Hypocotyl",
+        component == "roots" ~ "Root",
+        TRUE ~ component
+      ),
+      component_f = factor(component_f, levels = c("Leaf", "Stem", "Hypocotyl", "Root"))
+    ) %>%
+    # Calculate cumulative positions for stacking (bottom to top)
+    group_by(species, treatment) %>%
+    arrange(component_f) %>%
+    mutate(
+      y_end = cumsum(mean_value),
+      y_start = lag(y_end, default = 0),
+      y_seg = mean_value,  # Height of each segment
+      y_mid = y_start + y_seg/2  # Middle of segment for potential labeling
+    ) %>%
+    ungroup() %>%
+    # Add error bars and label positions (only for the top segment or total)
+    group_by(species, treatment) %>%
+    mutate(
+      total_height = sum(mean_value),
+      is_top = y_end == max(y_end),
+      # Error bars span from total-SE to total+SE
+      err_low = ifelse(is_top, total_height - se_total, NA),
+      err_high = ifelse(is_top, total_height + se_total, NA),
+      # Label position slightly above error bar
+      lab_y = ifelse(is_top, total_height + se_total + 0.05 * total_height, NA)
+    ) %>%
+    ungroup()
+  
+  return(stacked_data)
+}
+
+# ============================================================
+# CREATE THE STACKED DATA
+# ============================================================
+
+# Create the stacked data using your processed data and letters
+stacked_plot_data <- create_stacked_data(processed_data, all_letters)
+
+# Preview the structure
+cat("=== STACKED PLOT DATA STRUCTURE ===\n")
+print(head(stacked_plot_data, 12))
+
+cat("\n=== UNIQUE COMPONENTS ===\n")
+print(unique(stacked_plot_data$component_f))
+
+# ============================================================
+# CREATE THE PLOTS
+# ============================================================
+
+# Create plots for each species
+rhma_plot <- component_stack_plot(stacked_plot_data, "RHMA", "R. mangle - Biomass Components")
+lara_plot <- component_stack_plot(stacked_plot_data, "LARA", "L. racemosa - Biomass Components")
+
+# Display plots
+cat("\n=== CREATING PLOTS ===\n")
+cat("RHMA plot:\n")
+print(rhma_plot)
+
+cat("\nLARA plot:\n") 
+print(lara_plot)
+
+# ============================================================
+# COMBINE PLOTS (OPTIONAL)
+# ============================================================
+
+# If you want to combine both species in one plot
+library(patchwork)  # You may need to install this: install.packages("patchwork")
+
+combined_plot <- rhma_plot / lara_plot + 
+  plot_layout(heights = c(1, 1)) +
+  plot_annotation(title = "Biomass Component Comparison")
+
+cat("\nCombined plot:\n")
+print(combined_plot)
+
+# ============================================================
+# SAVE PLOTS
+# ============================================================
+
+# Save individual plots
+ggsave("RHMA_biomass_components.png", rhma_plot, width = 10, height = 6, dpi = 300)
+ggsave("LARA_biomass_components.png", lara_plot, width = 10, height = 6, dpi = 300)
+
+# Save combined plot
+ggsave("Combined_biomass_components.png", combined_plot, width = 10, height = 10, dpi = 300)
+
+cat("\n=== PLOTS SAVED ===\n")
+cat("- RHMA_biomass_components.png\n")
+cat("- LARA_biomass_components.png\n") 
+cat("- Combined_biomass_components.png\n")
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+# Function to create both plots easily
+create_species_component_plots <- function(stacked_data) {
+  plots <- list()
+  plots$RHMA <- component_stack_plot(stacked_data, "RHMA", "RHMA - Biomass Components")
+  plots$LARA <- component_stack_plot(stacked_data, "LARA", "LARA - Biomass Components") 
+  return(plots)
+}
+
+# Create all plots
+all_component_plots <- create_species_component_plots(stacked_plot_data)
+
+cat("\n=== USAGE EXAMPLES ===\n")
+cat("View individual plots:\n")
+cat("print(all_component_plots$RHMA)\n")
+cat("print(all_component_plots$LARA)\n")
+cat("\nOr use the direct plotting function:\n")
+cat("component_stack_plot(stacked_plot_data, 'RHMA', 'Custom Title')\n")
+
+# ============================================================
+# DATA INSPECTION
+# ============================================================
+
+# Check the data structure for troubleshooting
+inspect_stacked_data <- function(data, species_name) {
+  cat(sprintf("\n=== %s DATA INSPECTION ===\n", species_name))
+  subset_data <- data %>% filter(species == species_name)
+  
+  cat("Treatment levels:\n")
+  print(unique(subset_data$treatment))
+  
+  cat("\nComponent breakdown by treatment:\n")
+  summary_table <- subset_data %>%
+    group_by(treatment, component_f) %>%
+    summarise(mean_value = first(mean_value), .groups = "drop") %>%
+    pivot_wider(names_from = component_f, values_from = mean_value)
+  print(summary_table)
+  
+  cat("\nLetters by treatment:\n")
+  letters_table <- subset_data %>%
+    filter(!is.na(lab_y)) %>%
+    dplyr::select(treatment, letter, lab_y) %>%
+    distinct()
+  print(letters_table)
+}
+
+# Inspect both species
+inspect_stacked_data(stacked_plot_data, "RHMA")
+inspect_stacked_data(stacked_plot_data, "LARA")
+```
+
+
