@@ -1,0 +1,11 @@
+variable,treatment,n
+Salinity (ppt),Soil,88
+Salinity (ppt),Crushed glass,88
+Salinity (ppt),25% SG,88
+Salinity (ppt),75% SG,88
+Salinity (ppt),100% SG,88
+Temperature (°C),Soil,76
+Temperature (°C),Crushed glass,76
+Temperature (°C),25% SG,76
+Temperature (°C),75% SG,76
+Temperature (°C),100% SG,76

@@ -1,0 +1,3 @@
+variable,chi2,df,p_value,decision,recommendation
+Temperature (°C),30.97337909933152,19,0.04064518998262053,significant,Include (1 | tank_number) in models for temperature-linked responses.
+Salinity (ppt),3.1871504260122903,19,0.9999823612124376,not significant,Random Tank effect not required for salinity.

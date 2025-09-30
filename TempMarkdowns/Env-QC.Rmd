@@ -1,0 +1,480 @@
+---
+title: "Environmental QC: Temperature & Salinity"
+author: "Sarai Hutchinson"
+date: "2025-09-29"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+params:
+  temp_path: "~/UVI/Thesis.Work/SargMangs/Data/Tank_Temperature_Data.csv"
+  sal_path:  "~/UVI/Thesis.Work/SargMangs/Data/Tank_Salinity_Data.csv"
+  out_dir: "env_figs"
+  tables_dir: "env_tables"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+
+# Install missing packages if needed
+need <- c("tidyverse", "janitor", "FSA", "rcompanion", "multcompView")
+to_install <- need[!need %in% rownames(installed.packages())]
+if (length(to_install)) install.packages(to_install, repos = "https://cloud.r-project.org", quiet = TRUE)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(janitor)
+  library(FSA)
+  library(rcompanion)
+  library(multcompView)
+})
+
+# Create output dirs
+dir.create(params$out_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(params$tables_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+## 1) Aesthetics, helpers
+
+```{r aesthetics-helpers}
+# Okabe–Ito palette and shapes (colorblind-friendly)
+okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7", "#999999")
+shape_vals <- c("Soil" = 0, "Crushed glass" = 17, "25% SG" = 18, "75% SG" = 8, "100% SG" = 15)
+color_vals <- c("Soil" = okabe_ito[1], "Crushed glass" = okabe_ito[6],
+                "25% SG" = okabe_ito[3], "75% SG" = okabe_ito[2], "100% SG" = okabe_ito[7])
+treat_order <- c("Soil", "Crushed glass", "25% SG", "75% SG", "100% SG")
+
+# Prepare environmental data
+prep_env <- function(path, value_label) {
+  df <- readr::read_csv(path, show_col_types = FALSE) |> janitor::clean_names()
+
+  # Detect measurement columns, fallback to any "average" column
+  mcols <- names(df)[stringr::str_detect(names(df), "temperature_measurement|salinity_measurement")]
+  if (!length(mcols)) mcols <- names(df)[stringr::str_detect(names(df), "^average")]
+  if (!length(mcols)) stop("No measurement or average columns detected in: ", basename(path))
+  mcols <- mcols[1:min(3, length(mcols))]
+
+  # Compute average vector OUTSIDE mutate()
+  avg_vec <- if (length(mcols) >= 2) {
+    df |>
+      dplyr::select(dplyr::all_of(mcols)) |>
+      as.matrix() |>
+      rowMeans(na.rm = TRUE)
+  } else {
+    df[[mcols[1]]]
+  }
+
+  df |>
+    dplyr::mutate(
+      treatment   = dplyr::recode(as.character(treatment),
+                                  A = "Soil", B = "Crushed glass", C = "100% SG",
+                                  D = "25% SG", E = "75% SG"),
+      treatment   = factor(treatment,
+                           levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% SG"),
+                           ordered = TRUE),
+      tank_number = suppressWarnings(as.integer(tank_number)),
+      Average     = avg_vec
+    ) |>
+    dplyr::select(sampling_date_mm_dd_yyyy, time, tank_number, treatment, Average) |>
+    dplyr::mutate(variable = value_label)
+}
+
+# Letter placement for significance labels - positions above the highest data point
+pos_for_letters <- function(dat, letters_df, y_offset = 1.0) {
+  max_vals <- dat |> 
+    group_by(treatment) |> 
+    summarise(y = max(Average, na.rm = TRUE), .groups = "drop")
+  
+  letters_df |> 
+    rename(Letter = Letter) |> 
+    mutate(Treatment = factor(Treatment, levels = treat_order, ordered = TRUE)) |> 
+    select(treatment = Treatment, Letter) |> 
+    right_join(max_vals, by = "treatment") |> 
+    mutate(y = y + y_offset)
+}
+
+# Plot function
+plot_box <- function(dat, pos_df, title_txt, ylab_txt, file_stub) {
+  p <- ggplot(dat, aes(x = treatment, y = Average, fill = treatment, shape = treatment)) +
+    geom_boxplot(alpha = 0.85, color = "black", outlier.shape = 21, outlier.fill = "white") +
+    geom_jitter(width = 0.15, alpha = 0.35, size = 1.6) +
+    # geom_text(data = pos_df, aes(x = treatment, y = y, label = Letter),
+    #           inherit.aes = FALSE, fontface = "bold", size = 6, vjust = 0) +
+    scale_fill_manual(values = color_vals, drop = FALSE) +
+    scale_shape_manual(values = shape_vals, drop = FALSE) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+    labs(title = title_txt, x = "Treatment", y = ylab_txt) +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "none", panel.grid.minor = element_blank())
+  
+  ggsave(file.path(params$out_dir, paste0(file_stub, ".png")), p, width = 8, height = 5, dpi = 300)
+  tryCatch({
+    ggsave(file.path(params$out_dir, paste0(file_stub, ".pdf")), p, width = 8, height = 5, dpi = 300, device = cairo_pdf)
+  }, error = function(e) {
+    ggsave(file.path(params$out_dir, paste0(file_stub, ".pdf")), p, width = 8, height = 5, dpi = 300)
+  })
+  p
+}
+
+# Caption helpers
+fmt_p <- function(p) ifelse(p < 0.001, "p < 0.001", paste0("p = ", formatC(p, digits = 3, format = "f")))
+fmt_chi <- function(chi, df) paste0("χ²(", df, ") = ", formatC(chi, digits = 3, format = "f"))
+
+letters_summary <- function(letters_df) {
+  if (n_distinct(letters_df$Letter) == 1) return(paste0("All treatments: ", unique(letters_df$Letter)))
+  letters_df |> 
+    group_by(Letter) |> 
+    summarise(groups = paste(Treatment, collapse = ", "), .groups = "drop") |>
+    arrange(Letter) |> 
+    summarise(summary = paste0(Letter, ": ", groups, collapse = "; ")) |> 
+    pull(summary)
+}
+
+build_caption <- function(variable, kw_df, letters_df) {
+  row <- kw_df |> filter(variable == !!variable)
+  paste0(variable, " by treatment. Kruskal–Wallis ",
+         fmt_chi(row$chi2, row$df), ", ", fmt_p(row$p_value),
+         ". Groups sharing letters are not significantly different (α=0.05). Letters: ",
+         letters_summary(letters_df), ".")
+}
+```
+
+## 2) Read & clean data
+
+```{r read-data}
+stopifnot(file.exists(params$temp_path), file.exists(params$sal_path))
+temp <- prep_env(params$temp_path, "Temperature (°C)")
+sal  <- prep_env(params$sal_path,  "Salinity (ppt)")
+```
+
+## 3) Stats: Shapiro, KW, Dunn, CLDs
+
+```{r stats}
+# Test normality of residuals using Shapiro-Wilk
+# This informs whether we should use parametric (ANOVA) or non-parametric (Kruskal-Wallis) tests
+shapiro_block <- function(dat) {
+  fit <- aov(Average ~ treatment, data = dat)
+  sw <- shapiro.test(residuals(fit))
+  tibble(W = unname(sw$statistic), p = sw$p.value)
+}
+
+assump_temp <- shapiro_block(temp)
+assump_sal  <- shapiro_block(sal)
+
+# Combine normality test results
+shapiro_df <- bind_rows(
+  assump_temp |> mutate(variable = "Temperature (°C)"),
+  assump_sal |> mutate(variable = "Salinity (ppt)")
+) |> select(variable, W, p)
+
+# Calculate sample sizes per treatment
+sample_sizes <- bind_rows(
+  temp |> mutate(variable = "Temperature (°C)"),
+  sal |> mutate(variable = "Salinity (ppt)")
+) |>
+  group_by(variable, treatment) |>
+  summarise(n = n(), .groups = "drop")
+
+# Use Kruskal-Wallis test (non-parametric alternative to one-way ANOVA)
+# Appropriate when normality assumptions are not met or data is ordinal
+kw_temp <- kruskal.test(Average ~ treatment, data = temp)
+kw_sal  <- kruskal.test(Average ~ treatment, data = sal)
+
+kw_df <- tibble(
+  variable = c("Temperature (°C)", "Salinity (ppt)"),
+  chi2 = c(unname(kw_temp$statistic), unname(kw_sal$statistic)),
+  df = 4L,
+  p_value = c(kw_temp$p.value, kw_sal$p.value)
+)
+
+# Create plain factor copies for Dunn tests (avoid ordered factors which can cause issues with FSA)
+temp_dunn <- temp |>
+  dplyr::filter(!is.na(Average), !is.na(treatment)) |>
+  dplyr::mutate(treat_unord = factor(as.character(treatment)))
+
+sal_dunn <- sal |>
+  dplyr::filter(!is.na(Average), !is.na(treatment)) |>
+  dplyr::mutate(treat_unord = factor(as.character(treatment)))
+
+# Post-hoc pairwise comparisons using Dunn's test with Bonferroni correction
+dunn_T <- FSA::dunnTest(Average ~ treat_unord, data = temp_dunn, method = "bonferroni")$res
+dunn_S <- FSA::dunnTest(Average ~ treat_unord, data = sal_dunn,  method = "bonferroni")$res
+
+# Generate compact letter display (CLD) for visualization
+cld_T <- cldList(P.adj ~ Comparison, data = dunn_T, threshold = 0.05) |> 
+  rename(Treatment = Group)
+cld_S <- cldList(P.adj ~ Comparison, data = dunn_S, threshold = 0.05) |> 
+  rename(Treatment = Group)
+
+# Save all statistical results
+write_csv(shapiro_df, file.path(params$tables_dir, "env_shapiro_results.csv"))
+write_csv(sample_sizes, file.path(params$tables_dir, "env_sample_sizes.csv"))
+write_csv(kw_df, file.path(params$tables_dir, "env_kw_results.csv"))
+write_csv(dunn_T, file.path(params$tables_dir, "env_dunn_temperature.csv"))
+write_csv(dunn_S, file.path(params$tables_dir, "env_dunn_salinity.csv"))
+write_csv(cld_T, file.path(params$tables_dir, "env_letters_temperature.csv"))
+write_csv(cld_S, file.path(params$tables_dir, "env_letters_salinity.csv"))
+
+# Display key results
+cat("\n### Normality Tests (Shapiro-Wilk on ANOVA residuals)\n")
+shapiro_df
+
+cat("\n### Sample Sizes\n")
+sample_sizes |> pivot_wider(names_from = treatment, values_from = n)
+
+cat("\n### Kruskal-Wallis Results\n")
+kw_df
+
+cat("\n### Compact Letter Display - Temperature\n")
+cld_T
+
+cat("\n### Compact Letter Display - Salinity\n")
+cld_S
+```
+I think this section isn't required since I already tested for treatment by salinity and temperature
+## 3b) Tank-level tests for Temperature and Salinity
+```{r tank-effects}
+# Treat tank number as factor (unordered)
+temp_tank <- temp |> filter(!is.na(Average)) |> mutate(tank_f = factor(tank_number))
+sal_tank  <- sal  |> filter(!is.na(Average)) |> mutate(tank_f = factor(tank_number))
+
+# --- Kruskal–Wallis by tank ---
+kw_temp_tank <- kruskal.test(Average ~ tank_f, data = temp_tank)
+kw_sal_tank  <- kruskal.test(Average ~ tank_f, data = sal_tank)
+
+tank_kw_df <- tibble(
+  variable = c("Temperature (°C)", "Salinity (ppt)"),
+  chi2     = c(unname(kw_temp_tank$statistic), unname(kw_sal_tank$statistic)),
+  df       = c(kw_temp_tank$parameter, kw_sal_tank$parameter),
+  p_value  = c(kw_temp_tank$p.value, kw_sal_tank$p.value)
+)
+
+tank_kw_df
+
+# --- Optional post hoc Dunn tests (only if significant) ---
+if (kw_temp_tank$p.value < 0.05) {
+  dunn_temp_tank <- FSA::dunnTest(Average ~ tank_f, data = temp_tank, method = "bonferroni")$res
+  write_csv(dunn_temp_tank, file.path(params$tables_dir, "tank_dunn_temperature.csv"))
+} else {
+  message("No significant tank effect detected for temperature.")
+}
+
+if (kw_sal_tank$p.value < 0.05) {
+  dunn_sal_tank <- FSA::dunnTest(Average ~ tank_f, data = sal_tank, method = "bonferroni")$res
+  write_csv(dunn_sal_tank, file.path(params$tables_dir, "tank_dunn_salinity.csv"))
+} else {
+  message("No significant tank effect detected for salinity.")
+}
+
+# Save KW results to CSV
+write_csv(tank_kw_df, file.path(params$tables_dir, "env_kw_results_by_tank.csv"))
+```
+### What This Will Do
+- Runs **Kruskal–Wallis** tests with `tank_number` as the grouping variable.
+- Reports χ², df, and p-values.
+- If **p < 0.05**, it automatically runs **pairwise Dunn’s test** and saves a CSV of pairwise p-values for tanks that differ.
+- Always saves a summary CSV (`env_kw_results_by_tank.csv`) in your tables folder.
+
+---
+
+### Interpreting the Results
+- If **both p-values > 0.05** → no tank effect → no need to include tank in future models.
+- If either p-value is **< 0.05** → include tank as a **random effect** in your GLMM/LMM models to control for that source of variation.
+
+## 3c) Automatic interpretation of tank effects
+```{r tank-interpretation}
+# Small formatters
+fmt_p  <- function(p) ifelse(is.na(p), "p = NA",
+                      ifelse(p < 0.001, "p < 0.001",
+                             paste0("p = ", formatC(p, digits = 3, format = "f"))))
+fmt_chi <- function(stat, df) paste0("χ²(", df, ") = ", formatC(unname(stat), digits = 3, format = "f"))
+
+# Build interpretation lines
+interp_line <- function(var_label, kw_obj) {
+  significant <- isTRUE(kw_obj$p.value < 0.05)
+  decision <- if (significant) "Significant tank effect detected."
+              else "No evidence of a tank effect."
+  recommendation <- if (significant)
+      "Recommendation: include a random intercept for Tank, e.g., (1 | tank_number), in downstream models for this response."
+    else
+      "Recommendation: a random Tank effect is not required for parsimony; you may omit it unless justified by other design considerations."
+  paste0(
+    var_label, ": Kruskal–Wallis ", fmt_chi(kw_obj$statistic, kw_obj$parameter),
+    "; ", fmt_p(kw_obj$p.value), ". ",
+    decision, " ", recommendation
+  )
+}
+
+line_T <- interp_line("Temperature (°C)", kw_temp_tank)
+line_S <- interp_line("Salinity (ppt)",   kw_sal_tank)
+
+# Print to the knitted report
+cat("\n**Tank-effect interpretation**\n\n")
+cat("- ", line_T, "\n")
+cat("- ", line_S, "\n\n")
+
+# Save a tidy CSV with decisions/recommendations
+tank_interpret_tbl <- tibble::tibble(
+  variable       = c("Temperature (°C)", "Salinity (ppt)"),
+  chi2           = c(unname(kw_temp_tank$statistic), unname(kw_sal_tank$statistic)),
+  df             = c(kw_temp_tank$parameter, kw_sal_tank$parameter),
+  p_value        = c(kw_temp_tank$p.value, kw_sal_tank$p.value),
+  decision       = c(ifelse(kw_temp_tank$p.value < 0.05, "significant", "not significant"),
+                     ifelse(kw_sal_tank$p.value  < 0.05, "significant", "not significant")),
+  recommendation = c(
+    ifelse(kw_temp_tank$p.value < 0.05,
+           "Include (1 | tank_number) in models for temperature-linked responses.",
+           "Random Tank effect not required for temperature."),
+    ifelse(kw_sal_tank$p.value < 0.05,
+           "Include (1 | tank_number) in models for salinity-linked responses.",
+           "Random Tank effect not required for salinity.")
+  )
+)
+
+readr::write_csv(tank_interpret_tbl, file.path(params$tables_dir, "env_tank_interpretation.csv"))
+```
+## 3d) Model comparison: with vs. without Tank random effect
+```{r tank-model-comparison}
+# Load lme4 for mixed models
+suppressPackageStartupMessages(library(lme4))
+
+# Fit models
+mod_temp_noTank <- lm(Average ~ treatment, data = temp)
+mod_temp_Tank   <- lmer(Average ~ treatment + (1 | tank_number), data = temp, REML = FALSE)
+
+# Compute log-likelihoods and LRT
+LL_noTank <- logLik(mod_temp_noTank)
+LL_Tank   <- logLik(mod_temp_Tank)
+
+LR <- -2 * (as.numeric(LL_noTank) - as.numeric(LL_Tank))
+df_diff <- attr(LL_Tank, "df") - attr(LL_noTank, "df")
+p_val <- pchisq(LR, df = df_diff, lower.tail = FALSE)
+
+cat("Likelihood-ratio test: χ²(", df_diff, ") = ",
+    round(LR, 3), ", p = ", signif(p_val, 3), "\n")
+```
+
+## 4) Plots + captions
+
+```{r plotting, fig.width=8, fig.height=5}
+pos_T <- pos_for_letters(temp, cld_T)
+pos_S <- pos_for_letters(sal,  cld_S)
+
+p_temp <- plot_box(temp, pos_T, "Tank Water Temperature by Treatment", "Temperature (°C)", "temperature_by_treatment")
+p_sal  <- plot_box(sal, pos_S, "Tank Water Salinity by Treatment", "Salinity (ppt)", "salinity_by_treatment")
+
+cap_T <- build_caption("Temperature (°C)", kw_df, cld_T)
+cap_S <- build_caption("Salinity (ppt)",   kw_df, cld_S)
+
+cat("\n**Figure caption (Temperature):** ", cap_T, "\n\n")
+cat("**Figure caption (Salinity):** ", cap_S, "\n\n")
+
+write_csv(tibble(figure = c("temperature_by_treatment", "salinity_by_treatment"),
+                 caption = c(cap_T, cap_S)),
+          file.path(params$tables_dir, "env_captions.csv"))
+
+p_temp
+p_sal
+```
+
+## 4b) Time-series line graphs (means ± SE) by treatment over time ----
+```{r }
+suppressPackageStartupMessages(library(lubridate))
+
+# Summarize by date × treatment
+summarize_env_time <- function(dat) {
+  dat %>%
+    mutate(Date = mdy(sampling_date_mm_dd_yyyy)) %>%
+    filter(!is.na(Date), !is.na(Average), !is.na(treatment)) %>%
+    group_by(Date, treatment) %>%
+    summarise(
+      n   = n(),
+      mean = mean(Average, na.rm = TRUE),
+      se   = sd(Average, na.rm = TRUE) / sqrt(n),
+      .groups = "drop"
+    ) %>%
+    arrange(Date, treatment)
+}
+
+temp_time <- summarize_env_time(temp)
+sal_time  <- summarize_env_time(sal)
+
+# Save the summary tables
+readr::write_csv(temp_time, file.path(params$tables_dir, "temperature_time_summary.csv"))
+readr::write_csv(sal_time,  file.path(params$tables_dir, "salinity_time_summary.csv"))
+
+# Line-plot helper (consistent with your colors/shapes)
+plot_time_lines <- function(summ_df, title_txt, ylab_txt, file_stub) {
+  p <- ggplot(summ_df, aes(x = Date, y = mean, color = treatment, group = treatment)) +
+    geom_line(linewidth = 1) +
+    geom_point(aes(shape = treatment), size = 2) +
+    geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0, linewidth = 0.6) +
+    scale_color_manual(values = color_vals, drop = FALSE) +
+    scale_shape_manual(values = shape_vals, drop = FALSE) +
+    scale_x_date(date_breaks = "2 weeks", date_labels = "%b %d") +
+    labs(title = title_txt, x = "Date", y = ylab_txt, color = "Treatment", shape = "Treatment") +
+    theme_minimal(base_size = 14) +
+    theme(
+      legend.position = "bottom",
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+
+    # Save PNG + PDF
+    ggsave(file.path(params$out_dir, paste0(file_stub, ".png")), p, width = 10, height = 5, dpi = 300)
+    tryCatch({
+      ggsave(file.path(params$out_dir, paste0(file_stub, ".pdf")), p, width = 10, height = 5, dpi = 300, device = cairo_pdf)
+    }, error = function(e) {
+      ggsave(file.path(params$out_dir, paste0(file_stub, ".pdf")), p, width = 10, height = 5, dpi = 300)
+    })
+
+    p
+}
+
+# Build the time-series figures
+p_temp_time <- plot_time_lines(temp_time, "Mean Temperature Over Time by Treatment", "Temperature (°C)", "temperature_time_series")
+p_sal_time  <- plot_time_lines(sal_time,  "Mean Salinity Over Time by Treatment",    "Salinity (ppt)",  "salinity_time_series")
+
+# Print to document
+p_temp_time
+p_sal_time
+```
+
+## 5) Combine line + boxplot into panels with patchwork ----
+```{r }
+library(patchwork)
+
+# Temperature panels: line graph (A) + boxplot (B)
+fig_temp_combined <- p_temp_time + p_temp +
+  plot_annotation(tag_levels = "A")  # labels panels A, B
+
+ggsave(file.path(params$out_dir, "temperature_panels.png"),
+       fig_temp_combined, width = 14, height = 10, dpi = 300)
+ggsave(file.path(params$out_dir, "temperature_panels.pdf"),
+       fig_temp_combined, width = 14, height = 10, dpi = 300)
+
+# Salinity panels: line graph (A) + boxplot (B)
+fig_sal_combined <- p_sal_time + p_sal +
+  plot_annotation(tag_levels = "A")
+
+ggsave(file.path(params$out_dir, "salinity_panels.png"),
+       fig_sal_combined, width = 14, height = 10, dpi = 300)
+ggsave(file.path(params$out_dir, "salinity_panels.pdf"),
+       fig_sal_combined, width = 14, height = 10, dpi = 300)
+
+# Print to Rmd so they show in knitted document
+fig_temp_combined
+fig_sal_combined
+```
+---
+
+✅ **What this gives you:**
+
+* Clean plots (Okabe–Ito colors + significance letters) saved to `env_figs/`.
+* CSVs with KW, Dunn, CLDs, and captions saved to `env_tables/`.
+* Captions automatically generated for direct copy-paste into your results section.
+
+Would you like me to also include a **small methods paragraph** (e.g. “Temperature and salinity were compared across treatments using Kruskal–Wallis…”) that you can paste into your Methods chapter?
+
+
