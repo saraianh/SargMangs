@@ -1,29 +1,29 @@
 Trait,Site,Comparison,Z-statistic,p-adjusted,Effect size r (magnitude),n
-width,VB,100% Sargassum (SG) vs Crushed glass,3.4112357511624922,0.006466915075324061,0.539 (Large),20 vs 20
-width,MB,Crushed glass vs Soil,-3.5655989186599197,0.003630262017393901,0.564 (Large),20 vs 20
-prop_length,VB,100% Sargassum (SG) vs 25% SG,3.0238109201115018,0.024961239028563453,0.478 (Medium),20 vs 20
-prop_length,VB,100% Sargassum (SG) vs Crushed glass,3.0320055296510993,0.024293475354596507,0.479 (Medium),20 vs 20
-prop_length,VB,100% Sargassum (SG) vs Soil,3.154924672745063,0.016053954870984027,0.499 (Medium),20 vs 20
-prop_length,MB,25% SG vs Crushed glass,2.832821895828023,0.04613908545538246,0.448 (Medium),20 vs 20
-rad_length,MB,100% Sargassum (SG) vs 75% SG,-3.0957110733153006,0.019634157505015924,0.489 (Medium),20 vs 20
-rad_length,MB,100% Sargassum (SG) vs Crushed glass,-6.665284428247151,2.6415327560299784e-10,1.054 (Large),20 vs 20
-rad_length,MB,100% Sargassum (SG) vs Soil,-6.185747149245973,6.180901261088314e-9,0.978 (Large),20 vs 20
-rad_length,MB,25% SG vs Crushed glass,-5.743097353244885,9.296024486946089e-8,0.908 (Large),20 vs 20
-rad_length,MB,25% SG vs Soil,-5.263560074243706,1.4129231023939883e-6,0.832 (Large),20 vs 20
-rad_length,MB,75% SG vs Crushed glass,-3.569573354931851,0.0035756308672194865,0.564 (Large),20 vs 20
-rad_length,MB,75% SG vs Soil,-3.0900360759306724,0.020013218505027096,0.489 (Medium),20 vs 20
-rad_length,PR,100% Sargassum (SG) vs Crushed glass,-2.85441978189232,0.04311551873912346,0.451 (Medium),20 vs 20
-rad_length,PR,25% SG vs Crushed glass,-2.8295987403106473,0.04660641607759709,0.447 (Medium),20 vs 20
-total_length,MB,100% Sargassum (SG) vs 75% SG,-3.0794630096122106,0.020737412037974478,0.487 (Medium),20 vs 20
-total_length,MB,100% Sargassum (SG) vs Crushed glass,-4.524925238613861,6.0416859021934056e-5,0.715 (Large),20 vs 20
-total_length,MB,100% Sargassum (SG) vs Soil,-5.6342970060518,1.7577386560106327e-7,0.891 (Large),20 vs 20
-total_length,MB,25% SG vs Crushed glass,-3.5549080527998993,0.0037811129122234007,0.562 (Large),20 vs 20
-total_length,MB,25% SG vs Soil,-4.664279820237838,3.096997273899408e-5,0.737 (Large),20 vs 20
-mass,VB,100% Sargassum (SG) vs 25% SG,4.9289245891507445,8.268347915188529e-6,0.779 (Large),20 vs 20
-mass,VB,100% Sargassum (SG) vs 75% SG,3.2959457014840985,0.009809097192762233,0.521 (Large),20 vs 20
-mass,VB,100% Sargassum (SG) vs Crushed glass,4.27191638893762,1.9380024525419447e-4,0.675 (Large),20 vs 20
-mass,VB,100% Sargassum (SG) vs Soil,4.500915097725597,6.766153032479813e-5,0.712 (Large),20 vs 20
-mass,MB,100% Sargassum (SG) vs Crushed glass,-5.132172056496823,2.864174877869934e-6,0.811 (Large),20 vs 20
-mass,MB,100% Sargassum (SG) vs Soil,-3.0460341057954046,0.023188153075743043,0.482 (Medium),20 vs 20
-mass,MB,25% SG vs Crushed glass,-4.657677934376499,3.197959872690198e-5,0.736 (Large),20 vs 20
-mass,MB,75% SG vs Crushed glass,-3.1360243703354653,0.01712549721588157,0.496 (Medium),20 vs 20
+width,VB,Crushed glass vs 100% Sargassum (SG),-3.4112357511624922,0.006466915075324061,0.539 (Large),20 vs 20
+width,MB,Soil vs Crushed glass,3.5655989186599197,0.003630262017393901,0.564 (Large),20 vs 20
+prop_length,VB,Soil vs 100% Sargassum (SG),-3.154924672745063,0.016053954870984027,0.499 (Medium),20 vs 20
+prop_length,VB,Crushed glass vs 100% Sargassum (SG),-3.0320055296510993,0.024293475354596507,0.479 (Medium),20 vs 20
+prop_length,VB,25% SG vs 100% Sargassum (SG),-3.0238109201115018,0.024961239028563453,0.478 (Medium),20 vs 20
+prop_length,MB,Crushed glass vs 25% SG,-2.832821895828023,0.04613908545538246,0.448 (Medium),20 vs 20
+rad_length,MB,Soil vs 25% SG,5.263560074243706,1.4129231023939883e-6,0.832 (Large),20 vs 20
+rad_length,MB,Soil vs 75% SG,3.0900360759306724,0.020013218505027096,0.489 (Medium),20 vs 20
+rad_length,MB,Soil vs 100% Sargassum (SG),6.185747149245973,6.180901261088314e-9,0.978 (Large),20 vs 20
+rad_length,MB,Crushed glass vs 25% SG,5.743097353244885,9.296024486946089e-8,0.908 (Large),20 vs 20
+rad_length,MB,Crushed glass vs 75% SG,3.569573354931851,0.0035756308672194865,0.564 (Large),20 vs 20
+rad_length,MB,Crushed glass vs 100% Sargassum (SG),6.665284428247151,2.6415327560299784e-10,1.054 (Large),20 vs 20
+rad_length,MB,75% SG vs 100% Sargassum (SG),3.0957110733153006,0.019634157505015924,0.489 (Medium),20 vs 20
+rad_length,PR,Crushed glass vs 25% SG,2.8295987403106473,0.04660641607759709,0.447 (Medium),20 vs 20
+rad_length,PR,Crushed glass vs 100% Sargassum (SG),2.85441978189232,0.04311551873912346,0.451 (Medium),20 vs 20
+total_length,MB,Soil vs 25% SG,4.664279820237838,3.096997273899408e-5,0.737 (Large),20 vs 20
+total_length,MB,Soil vs 100% Sargassum (SG),5.6342970060518,1.7577386560106327e-7,0.891 (Large),20 vs 20
+total_length,MB,Crushed glass vs 25% SG,3.5549080527998993,0.0037811129122234007,0.562 (Large),20 vs 20
+total_length,MB,Crushed glass vs 100% Sargassum (SG),4.524925238613861,6.0416859021934056e-5,0.715 (Large),20 vs 20
+total_length,MB,75% SG vs 100% Sargassum (SG),3.0794630096122106,0.020737412037974478,0.487 (Medium),20 vs 20
+mass,VB,Soil vs 100% Sargassum (SG),-4.500915097725597,6.766153032479813e-5,0.712 (Large),20 vs 20
+mass,VB,Crushed glass vs 100% Sargassum (SG),-4.27191638893762,1.9380024525419447e-4,0.675 (Large),20 vs 20
+mass,VB,25% SG vs 100% Sargassum (SG),-4.9289245891507445,8.268347915188529e-6,0.779 (Large),20 vs 20
+mass,VB,75% SG vs 100% Sargassum (SG),-3.2959457014840985,0.009809097192762233,0.521 (Large),20 vs 20
+mass,MB,Soil vs 100% Sargassum (SG),3.0460341057954046,0.023188153075743043,0.482 (Medium),20 vs 20
+mass,MB,Crushed glass vs 25% SG,4.657677934376499,3.197959872690198e-5,0.736 (Large),20 vs 20
+mass,MB,Crushed glass vs 75% SG,3.1360243703354653,0.01712549721588157,0.496 (Medium),20 vs 20
+mass,MB,Crushed glass vs 100% Sargassum (SG),5.132172056496823,2.864174877869934e-6,0.811 (Large),20 vs 20

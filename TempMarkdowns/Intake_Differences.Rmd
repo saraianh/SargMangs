@@ -366,6 +366,8 @@ lara_assump <- check_norm_homo(lara2, num_cols_lara)
 lara_assump <- lara_assump %>% mutate(normality = if_else(shapiro_resid_p < 0.05, "Not normal", "OK"), homogeneity = if_else(levene_p < 0.05, "Unequal var", "OK"))
 knitr::kable(lara_assump, digits = 4, caption = "LARA: assumption checks")
 ```
+whats a non-parametric two-way test?
+
 
 
 ## 2.5 Non-parametric tests (Kruskal–Wallis + Dunn)
