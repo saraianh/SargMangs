@@ -1,0 +1,287 @@
+---
+title: "Mangrove Predation Analysis"
+author: "Sarai Hutchinson"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cerulean
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
+
+# Load required libraries
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(scales)
+
+# Define Okabe-Ito colorblind-friendly palette
+okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7", "#999999")
+
+# Define shapes for each Treatment_Name
+shape_vals <- c(
+  "Soil"                = 0,  # open square
+  "Crushed glass"       = 17, # filled triangle
+  "25% SG"              = 18, # filled diamond
+  "75% SG"              = 8,  # asterisk
+  "100% Sargassum (SG)" = 15  # filled square
+)
+
+# Define colors using okabe_ito palette
+color_vals <- c(
+  "Soil"                = okabe_ito[1], # green  (#009E73)
+  "Crushed glass"       = okabe_ito[6], # blue   (#0072B2)
+  "25% SG"              = okabe_ito[3], # orange (#E69F00)
+  "75% SG"              = okabe_ito[2], # vermillion (#D55E00)
+  "100% Sargassum (SG)" = okabe_ito[7]  # purple (#CC79A7)
+)
+```
+
+# Introduction
+
+This analysis examines the predation patterns of red (*Rhizophora mangle*, RHMA) and white (*Laguncularia racemosa*, LARA) mangrove seedlings under different substrate treatments.
+
+## Treatments
+
+1. **Soil**: Traditional potting soil (control)
+2. **Crushed glass**: 100% crushed glass substrate
+3. **25% SG**: 3:1 ratio of crushed glass to *Sargassum*
+4. **75% SG**: 1:3 ratio of crushed glass to *Sargassum*
+5. **100% Sargassum (SG)**: Pure *Sargassum* substrate
+
+```{r data-import}
+# Read data
+ALLDATA <- read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/Hutchinson_MonitoringAndIntake_Sites.csv")
+
+# Clean treatment labels
+ALLDATA <- ALLDATA %>%
+  mutate(
+    Treatment_Name = case_when(
+      Treatment == "A" ~ "Soil",
+      Treatment == "B" ~ "Crushed glass",
+      Treatment == "C" ~ "100% Sargassum (SG)",
+      Treatment == "D" ~ "25% SG",
+      Treatment == "E" ~ "75% SG",
+      TRUE ~ as.character(Treatment)
+    ),
+    Treatment_Name = factor(
+      Treatment_Name,
+      levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")
+    )
+  )
+
+# Derive Sargassum indicators
+ALLDATA <- ALLDATA %>%
+  mutate(
+    Sarg_present = if_else(
+      Treatment_Name %in% c("75% SG", "25% SG", "100% Sargassum (SG)"),
+      1L, 0L
+    ),
+    Sarg_group = factor(if_else(Sarg_present == 1L, "With Sargassum", "No Sargassum"),
+                        levels = c("No Sargassum","With Sargassum")),
+    SG_pct = case_when(
+      Treatment_Name == "Soil" ~ 0,
+      Treatment_Name == "Crushed glass" ~ 0,
+      Treatment_Name == "25% SG" ~ 25,
+      Treatment_Name == "75% SG" ~ 75,
+      Treatment_Name == "100% Sargassum (SG)"~ 100,
+      TRUE ~ NA_real_
+    )
+  )
+
+# Create binary survival variable and factorize
+ALLDATA_SurvBin <- ALLDATA %>%
+  mutate(
+    Survival = ifelse(Survivorship %in% c("A", "DY"), 1, 0),
+    Time_Period = factor(Time_Period, levels = c("0", "1", "2", "3", "4", "5", "6")),
+    Species = factor(Species)
+  )
+
+# Quality control - remove resurrection cases
+qc_resurrections <- ALLDATA_SurvBin %>%
+  mutate(TP_num = as.integer(as.character(Time_Period))) %>%
+  arrange(Species, Prop_ID, TP_num) %>%
+  group_by(Species, Prop_ID) %>%
+  mutate(change = Survival - lag(Survival)) %>%
+  filter(change == 1 & lag(Survival) == 0) %>%
+  ungroup()
+
+flagged_ids <- qc_resurrections %>% distinct(Species, Prop_ID)
+
+ALLDATA_clean <- ALLDATA_SurvBin %>%
+  anti_join(flagged_ids, by = c("Species","Prop_ID"))
+
+cat("Data cleaned. Removed", nrow(flagged_ids), "plants with resurrection issues.\n")
+
+```
+I want to look at predation levels across treatments overtime by looking at the Condition and Pests columns.
+```{r}
+# define your lookup once
+cond_map <- c(H = "Healthy", P = "Predation", UH = "Unhealthy")
+
+ALLDATA_pred <- ALLDATA_clean %>%
+  mutate(
+    condition_raw = as.character(Condition),
+
+    # normalize: uppercase + unify separators
+    .norm = condition_raw %>%
+      str_to_upper() %>%
+      str_replace_all("[,;/\\|&\\+]+", " ") %>%
+      str_squish(),
+
+    # split to tokens, keep only valid codes
+    .tokens = str_split(.norm, "\\s+"),
+    .tokens = map(.tokens, ~ .x[.x %in% names(cond_map)]),
+
+    # flags
+    has_healthy   = map_lgl(.tokens, ~ "H"  %in% .x),
+    has_predation = map_lgl(.tokens, ~ "P"  %in% .x),
+    has_unhealthy = map_lgl(.tokens, ~ "UH" %in% .x),
+
+    pred_any = as.integer(has_predation),
+
+    overall_health = case_when(
+      has_unhealthy                ~ "Unhealthy",
+      has_healthy & !has_unhealthy ~ "Healthy",
+      TRUE                         ~ NA_character_
+    ),
+
+    # map codes -> labels (no recode call)
+    .mapped = map(.tokens, ~ unname(cond_map[.x])),
+
+    # order for readability
+    .mapped = map(.mapped, ~ {
+      ord <- c("Predation","Unhealthy","Healthy")
+      unique(.x[order(factor(.x, levels = ord))])
+    }),
+
+    Condition_std = map_chr(.mapped, ~ if (length(.x)) paste(.x, collapse = ", ") else NA_character_)
+  ) %>%
+  dplyr::select(-.norm, -.tokens, -.mapped)
+```
+
+```{r}
+pred_summary <- ALLDATA_pred %>%
+  group_by(Species, Treatment_Name, Time_Period) %>%
+  summarise(
+    n = n(),
+    n_pred = sum(pred_any == 1, na.rm = TRUE),
+    pct_pred = 100 * n_pred / n,
+    .groups = "drop"
+  )
+
+```
+
+```{r}
+library(lme4)
+
+pred_glmm <- ALLDATA_pred %>%
+  filter(!is.na(pred_any)) %>%
+  mutate(
+    Species        = factor(Species),
+    Treatment_Name = factor(Treatment_Name),
+    Time_Period    = as.numeric(Time_Period) # or factor(Time_Period)
+  )
+
+#Make separate glmer's by Species#
+fit <- glmer(pred_any ~ Species * Treatment_Name + Time_Period +
+               (1|Site) + (1|Prop_ID),
+             data = pred_glmm, family = binomial,
+             control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+print(fit)
+
+library(car)
+car::Anova(fit, type = "III")  # test fixed terms
+
+library(emmeans)
+emm_trt_by_sp <- emmeans(fit, ~ Treatment_Name | Species, type = "response")
+pairs(emm_trt_by_sp, adjust = "bonferroni")  # treatment differences within species
+```
+
+```{r}
+# starting from your fitted model `fit`
+emm_trt_by_sp <- emmeans(fit, ~ Treatment_Name | Species, type = "response")
+
+# Pairwise treatment contrasts within each species, Holm-adjusted
+pairs_holm <- contrast(emm_trt_by_sp, method = "pairwise", adjust = "holm") %>%
+  summary(infer = TRUE)    # adds CIs; tests are on log-odds scale
+
+# Split out tables for quick reading
+pairs_holm_rhma <- as.data.frame(pairs_holm) %>% filter(Species == "RHMA")
+pairs_holm_lara <- as.data.frame(pairs_holm) %>% filter(Species == "LARA")
+
+# Check if RHMA has any significant differences (Holm-adjusted)
+any_sig_rhma <- any(pairs_holm_rhma$p.value < 0.05, na.rm = TRUE)
+any_sig_rhma
+pairs_holm_rhma   # inspect
+
+# (Optional) compact letters display per species, Holm-adjusted
+cld_lara <- cld(emm_trt_by_sp, by = "Species", adjust = "holm") %>%
+  as.data.frame() %>% filter(Species == "LARA")
+cld_rhma <- cld(emm_trt_by_sp, by = "Species", adjust = "holm") %>%
+  as.data.frame() %>% filter(Species == "RHMA")
+
+cld_lara
+cld_rhma
+
+pairs_holm <- contrast(emm_trt_by_sp, method = "pairwise", adjust = "holm") %>% 
+  as.data.frame()
+
+sig_pairs <- pairs_holm %>% 
+  filter(p.value < 0.05) %>% 
+  arrange(Species, p.value)
+
+sig_pairs
+```
+
+```{r}
+# 1) EMMeans on probability scale
+emm_trt_by_sp <- emmeans(fit, ~ Treatment_Name | Species, type = "response")
+
+emm_df <- as.data.frame(emm_trt_by_sp) %>%
+  dplyr::rename(
+    prob = prob,              # <- was "response"
+    lwr  = asymp.LCL,
+    upr  = asymp.UCL
+  ) %>%
+  dplyr::mutate(Treatment_Name = factor(Treatment_Name, levels = names(color_vals))) %>%
+  dplyr::group_by(Species) %>%
+  dplyr::arrange(prob, .by_group = TRUE) %>%
+  dplyr::ungroup() %>%
+  # lock legend/order to your palette keys
+  mutate(Treatment_Name = factor(Treatment_Name, levels = names(color_vals))) %>%
+  # order within each species by estimated prob (for nicer stacking in coord_flip)
+  group_by(Species) %>%
+  arrange(prob, .by_group = TRUE) %>%
+  ungroup()
+
+# 2) Plot
+ggplot(emm_df,
+       aes(x = Treatment_Name, y = prob,
+           color = Treatment_Name, shape = Treatment_Name)) +
+  geom_errorbar(aes(ymin = lwr, ymax = upr), width = 0.2, alpha = 0.8) +
+  geom_point(size = 2.6) +
+  facet_wrap(~ Species, nrow = 1) +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+  scale_color_manual(values = color_vals, name = "Treatment") +
+  scale_shape_manual(values = shape_vals,  name = "Treatment") +
+  labs(
+    title = "Predation probability by treatment (EMMeans ±95% CI)",
+    x = NULL, y = "Predation probability"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  )
+```
+
+
