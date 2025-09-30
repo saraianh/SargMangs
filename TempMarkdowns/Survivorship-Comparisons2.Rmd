@@ -197,10 +197,33 @@ survival_by_time <- ALLDATA_clean %>%
   summarise(
     n_total = n(),
     n_alive = sum(Surv_Bin),
-    survival_rate = mean(Surv_Bin) * 100,
-    se = sqrt(survival_rate * (100 - survival_rate) / n_total)
+    survival_rate = mean(Surv_Bin) * 100
+    # se = sqrt(survival_rate * (100 - survival_rate) / n_total)
   ) %>%
   ungroup()
+
+# --- Survival by REPLICATE (percentage within each Replicate/TP/Treatment/Species) ---
+survival_by_time_reps <- ALLDATA_clean %>%
+  group_by(Species, Treatment_Name, Replicate, Time_Period) %>%
+  summarise(
+    n_total   = sum(!is.na(Surv_Bin)),
+    n_alive   = sum(Surv_Bin == 1, na.rm = TRUE),
+    surv_pct  = 100 * n_alive / n_total,
+    .groups = "drop"
+  )
+
+# --- Mean across replicates (unweighted mean of replicate %s) + SE + 95% CI ---
+survival_by_time_mean <- survival_by_time_reps %>%
+  group_by(Species, Treatment_Name, Time_Period) %>%
+  summarise(
+    n_reps    = dplyr::n(),
+    mean_surv = mean(surv_pct, na.rm = TRUE),
+    sd_surv   = sd(surv_pct, na.rm = TRUE),
+    se_surv   = sd_surv / sqrt(n_reps),
+    ci95      = qt(0.975, pmax(n_reps - 1, 1)) * se_surv,
+    .groups = "drop"
+  ) %>%
+  arrange(Species, Treatment_Name, Time_Period)
 
 # Plot survival curves
 p_survival_curves <- ggplot(survival_by_time, 
@@ -211,18 +234,18 @@ p_survival_curves <- ggplot(survival_by_time,
                  group = Treatment_Name)) +
   geom_line(size = 1.2) +
   geom_point(size = 3) +
-  geom_ribbon(aes(ymin = survival_rate - se, 
-                  ymax = survival_rate + se,
-                  fill = Treatment_Name), 
-              alpha = 0.15, 
-              linetype = 0) +
+  # geom_ribbon(aes(ymin = survival_rate - se, 
+  #                 ymax = survival_rate + se,
+  #                 fill = Treatment_Name), 
+  #             alpha = 0.15, 
+  #             linetype = 0) +
   facet_wrap(~ Species, labeller = labeller(Species = c("LARA" = "L. racemosa (LARA)", 
                                                          "RHMA" = "R. mangle (RHMA)"))) +
   scale_color_manual(values = color_vals) +
   scale_fill_manual(values = color_vals) +
   scale_shape_manual(values = shape_vals) +
-  labs(title = "Survival Rates Over Time by Treatment and Species",
-       x = "Time Period",
+  labs(title = "Survival Rates Over 6 Months by Treatment and Species",
+       x = "Months",
        y = "Survival Rate (%)",
        color = "Treatment",
        shape = "Treatment",
@@ -232,6 +255,81 @@ p_survival_curves <- ggplot(survival_by_time,
         legend.text = element_text(size = 9))
 
 print(p_survival_curves)
+
+# --- Plot: mean across replicates (thick line) + SE ribbon ---
+p_survival_curves2 <- ggplot() +
+  # SE ribbon
+  geom_ribbon(
+    data = survival_by_time_mean,
+    aes(x = Time_Period,
+        ymin = mean_surv - se_surv,
+        ymax = mean_surv + se_surv,
+        fill = Treatment_Name,
+        group = Treatment_Name),
+    alpha = 0.12, linetype = 0
+  ) +
+  # Mean line + points
+  geom_line(
+    data = survival_by_time_mean,
+    aes(x = Time_Period, y = mean_surv,
+        color = Treatment_Name, group = Treatment_Name),
+    linewidth = 1.2
+  ) +
+  geom_point(
+    data = survival_by_time_mean,
+    aes(x = Time_Period, y = mean_surv,
+        color = Treatment_Name, shape = Treatment_Name),
+    size = 3
+  ) +
+  facet_wrap(~ Species,
+             labeller = labeller(Species = c("LARA" = "L. racemosa (LARA)",
+                                             "RHMA" = "R. mangle (RHMA)"))) +
+  scale_y_continuous(limits = c(0, 100), expand = expansion(mult = c(0.02, 0.05))) +
+  scale_color_manual(values = color_vals, name = "Treatment") +
+  scale_fill_manual(values = color_vals,  name = "Treatment") +
+  scale_shape_manual(values = shape_vals, name = "Treatment") +
+  labs(title = "Survival (%) Over 6 Months — Mean of Replicates (±SE)",
+       x = "Months", y = "Survival Rate (%)") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 9))
+print(p_survival_curves2)
+
+# --- Show each replicate as thin lines behind the mean ---
+p_survival_curves3 <- ggplot() +
+  # replicate trajectories
+  geom_line(
+    data = survival_by_time_reps,
+    aes(x = Time_Period, y = surv_pct,
+        group = interaction(Treatment_Name, Replicate),
+        color = Treatment_Name),
+    alpha = 0.35, linewidth = 0.6
+  ) +
+  # mean across replicates
+  geom_line(
+    data = survival_by_time_mean,
+    aes(x = Time_Period, y = mean_surv,
+        color = Treatment_Name, group = Treatment_Name),
+    linewidth = 1.2
+  ) +
+  geom_point(
+    data = survival_by_time_mean,
+    aes(x = Time_Period, y = mean_surv,
+        color = Treatment_Name, shape = Treatment_Name),
+    size = 2.6
+  ) +
+  facet_wrap(~ Species,
+             labeller = labeller(Species = c("LARA" = "L. racemosa (LARA)",
+                                             "RHMA" = "R. mangle (RHMA)"))) +
+  scale_y_continuous(limits = c(0, 100), expand = expansion(mult = c(0.02, 0.05))) +
+  scale_color_manual(values = color_vals, name = "Treatment") +
+  scale_shape_manual(values = shape_vals, name = "Treatment") +
+  labs(title = "Survival (%) Over 6 Months — Replicates (thin) + Mean",
+       x = "Months", y = "Survival Rate (%)") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 9))
+print(p_survival_curves3)
 ```
 
 ## Final Survival Rates
@@ -241,12 +339,12 @@ print(p_survival_curves)
 latest_survival <- survival_by_time %>%
   mutate(Time_Period = parse_number(as.character(Time_Period))) %>%   # TP3 -> 3
   filter(Time_Period == max(Time_Period, na.rm = TRUE)) %>%
-  dplyr::select(Treatment_Name, Species, n_total, n_alive, survival_rate, se) %>%
+  dplyr::select(Treatment_Name, Species, n_total, n_alive, survival_rate) %>%
   arrange(Species, desc(survival_rate))
 
 latest_survival %>%
   kable(caption = "Final Survival Rates by Treatment and Species",
-        col.names = c("Treatment", "Species", "Total", "Alive", "Survival Rate (%)", "SE"),
+        col.names = c("Treatment", "Species", "Total", "Alive", "Survival Rate (%)"),
         digits = 2) %>%
   kable_styling(bootstrap_options = c("striped", "hover")) 
 
@@ -257,8 +355,8 @@ write.csv(latest_survival,
 p_final_survival <- latest_survival %>%
   ggplot(aes(x = Treatment_Name, y = survival_rate, fill = Treatment_Name)) +
   geom_col(alpha = 0.8) +
-  geom_errorbar(aes(ymin = survival_rate - se, ymax = survival_rate + se),
-                width = 0.25) +
+  # geom_errorbar(aes(ymin = survival_rate - se, ymax = survival_rate),
+  #               width = 0.25) +
   facet_wrap(~ Species, labeller = labeller(Species = c("LARA" = "L. racemosa", 
                                                         "RHMA" = "R. mangle"))) +
   scale_fill_manual(values = color_vals) +
