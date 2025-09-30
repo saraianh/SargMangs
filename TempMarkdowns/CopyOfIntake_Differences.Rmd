@@ -81,6 +81,17 @@ clean_numeric <- function(x) {
   suppressWarnings(as.numeric(str_replace_all(x, ",", "")))
 }
 
+# Ensure 'params$out_dir' exists even if not rendered via params:
+if (!exists("params") || is.null(params$out_dir)) {
+  params <- list(out_dir = "analysis_outputs")
+}
+dir.create(params$out_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Make sure site is a factor and drop empty levels later
+.make_site_factor <- function(df) {
+  df %>% mutate(site = forcats::fct_drop(as.factor(site)))
+}
+
 detect_outliers <- function(data, traits) {
   data %>%
     pivot_longer(all_of(traits), names_to = "trait", values_to = "value") %>%
@@ -213,6 +224,51 @@ create_boxplots <- function(data, traits, species_name, trait_units = NULL) {
       strip.text = element_text(size = 10),
       strip.text.y = element_text(size = 9)  # Slightly smaller for trait labels with units
     )
+}
+
+suppressPackageStartupMessages({
+  library(multcompView)  # for multcompLetters()
+})
+
+# Compute CLD letters from a pairwise table (group1, group2, p.adj)
+.cld_from_pairs <- function(pairs_tbl, level_order) {
+  if (nrow(pairs_tbl) == 0) {
+    return(tibble(group = factor(level_order, levels = level_order), Letters = ""))
+  }
+  # Build a full p-value matrix in the specified order
+  lv <- level_order
+  M <- matrix(1, nrow = length(lv), ncol = length(lv), dimnames = list(lv, lv))
+  for (i in seq_len(nrow(pairs_tbl))) {
+    g1 <- as.character(pairs_tbl$group1[i])
+    g2 <- as.character(pairs_tbl$group2[i])
+    p  <- as.numeric(pairs_tbl$p.adj[i])
+    if (!is.na(g1) && !is.na(g2) && !is.na(p) && g1 %in% lv && g2 %in% lv) {
+      M[g1, g2] <- p
+      M[g2, g1] <- p
+    }
+  }
+  # multcompLetters wants a named vector of p-values for all pairs (upper triangle)
+  pv_named <- c()
+  for (i in seq_along(lv)) for (j in (i+1):length(lv)) {
+    if (j <= length(lv)) {
+      nm <- paste(lv[i], lv[j], sep = "-")
+      pv_named[nm] <- M[lv[i], lv[j]]
+    }
+  }
+  L <- multcompView::multcompLetters(pv_named, threshold = 0.05)$Letters
+  tibble(group = factor(names(L), levels = level_order),
+         Letters = unname(L))
+}
+
+# Prepare per-panel y positions (keeps letters above the tallest point in each panel)
+.panel_y_positions <- function(data_long, panel_vars, x_var, y_var = "value", bump = 0.06) {
+  # bump is fraction of panel range to place letters above the max
+  data_long %>%
+    group_by(across(all_of(panel_vars))) %>%
+    summarise(y_min = min(.data[[y_var]], na.rm = TRUE),
+              y_max = max(.data[[y_var]], na.rm = TRUE),
+              .groups = "drop") %>%
+    mutate(y_pos_panel = y_max + (y_max - y_min) * bump)
 }
 ```
 
@@ -589,6 +645,83 @@ create_publication_table <- function(results_list, species_name) {
 }
 ```
 
+```{r}
+# ---------- Assumptions & omnibus for SITE ----------
+assess_site_assumptions <- function(data, traits) {
+  purrr::map_dfr(traits, function(tr) {
+    df <- data %>% select(site, value = all_of(tr)) %>% drop_na()
+    if (n_distinct(df$site) < 2 || nrow(df) < 8) {
+      return(tibble(trait = tr, shapiro_p = NA, levene_p = NA, n = nrow(df)))
+    }
+    # One-way ANOVA residuals for normality; Levene for variance homogeneity
+    f <- lm(value ~ site, data = df)
+    shapiro_p <- tryCatch(shapiro.test(residuals(f))$p.value, error = function(e) NA)
+    lev <- tryCatch(car::leveneTest(value ~ site, data = df), error = function(e) NULL)
+    levene_p <- if (!is.null(lev)) lev$`Pr(>F)`[1] else NA
+    tibble(trait = tr, shapiro_p = shapiro_p, levene_p = levene_p, n = nrow(df))
+  }) %>%
+  mutate(
+    normal = ifelse(is.na(shapiro_p), "Unknown", ifelse(shapiro_p >= 0.05, "OK", "Violated")),
+    homoskedastic = ifelse(is.na(levene_p), "Unknown", ifelse(levene_p >= 0.05, "OK", "Violated")),
+    branch = case_when(
+      normal == "OK" & homoskedastic == "OK" ~ "ANOVA",
+      normal == "OK" & homoskedastic == "Violated" ~ "Welch",
+      TRUE ~ "Kruskal"
+    )
+  )
+}
+
+run_site_omnibus <- function(data, traits, assumptions_tbl) {
+  bind_rows(lapply(traits, function(tr) {
+    df <- data %>% select(site, value = all_of(tr)) %>% drop_na()
+    if (n_distinct(df$site) < 2) {
+      return(tibble(trait = tr, test = NA, stat = NA, df1 = NA, df2 = NA, p = NA))
+    }
+    branch <- assumptions_tbl %>% filter(trait == tr) %>% pull(branch)
+    if (branch == "ANOVA") {
+      fit <- aov(value ~ site, data = df)
+      a <- summary(fit)[[1]]
+      tibble(trait = tr, test = "ANOVA", stat = unname(a$`F value`[1]),
+             df1 = a$Df[1], df2 = a$Df[2], p = a$`Pr(>F)`[1])
+    } else if (branch == "Welch") {
+      w <- oneway.test(value ~ site, data = df, var.equal = FALSE)
+      tibble(trait = tr, test = "Welch ANOVA", stat = unname(w$statistic),
+             df1 = unname(w$parameter[1]), df2 = unname(w$parameter[2]), p = w$p.value)
+    } else {
+      kw <- kruskal.test(value ~ site, data = df)
+      tibble(trait = tr, test = "Kruskal-Wallis", stat = unname(kw$statistic),
+             df1 = length(unique(df$site)) - 1, df2 = NA, p = kw$p.value)
+    }
+  }))
+}
+
+# ---------- Post-hoc for SITE ----------
+site_posthoc <- function(data, traits, assumptions_tbl, p_adjust = "bonferroni") {
+  out <- list()
+  for (tr in traits) {
+    df <- data %>% select(site, value = all_of(tr)) %>% drop_na()
+    if (n_distinct(df$site) < 2) next
+    branch <- assumptions_tbl %>% filter(trait == tr) %>% pull(branch)
+    if (branch == "ANOVA") {
+      ph <- rstatix::tukey_hsd(aov(value ~ site, data = df)) %>%
+        mutate(trait = tr, method = "Tukey HSD")
+      out[[tr]] <- ph
+    } else if (branch == "Welch") {
+      # Games-Howell for unequal variances
+      ph <- rstatix::games_howell_test(df, value ~ site) %>%
+        mutate(trait = tr, method = "Games-Howell")
+      out[[tr]] <- ph
+    } else {
+      ph <- rstatix::dunn_test(df, value ~ site, p.adjust.method = p_adjust) %>%
+        mutate(trait = tr, method = paste0("Dunn (", p_adjust, ")"))
+      out[[tr]] <- ph
+    }
+  }
+  bind_rows(out)
+}
+```
+
+
 # RHMA Analysis
 
 ```{r rhma-analysis}
@@ -617,6 +750,8 @@ rhma_clean <- rhma_raw %>%
   group_by(prop_id) %>% 
   slice(1) %>% 
   ungroup()
+
+rhma_clean <- .make_site_factor(rhma_clean)
 
 # Outlier detection
 rhma_outliers <- detect_outliers(rhma_clean, rhma_traits)
@@ -678,6 +813,73 @@ if (needs_nonparametric) {
 p_rhma <- create_boxplots(rhma_clean, c("total_height", "epi_length", "diameter", "mass"), "RHMA", trait_units)
 print(p_rhma)
 ```
+
+```{r}
+# ---------- RHMA: Site effect on baseline traits ----------
+rhma_site_assump <- assess_site_assumptions(rhma_clean, rhma_traits)
+knitr::kable(rhma_site_assump, digits = 4, caption = "RHMA: Site-Only Assumption Checks")
+
+rhma_site_omni <- run_site_omnibus(rhma_clean, rhma_traits, rhma_site_assump) %>%
+  mutate(significant = ifelse(p < 0.05, "Yes", "No"))
+knitr::kable(rhma_site_omni, digits = 4, caption = "RHMA: Site Omnibus Tests (Baseline)")
+
+rhma_site_ph <- site_posthoc(rhma_clean, rhma_traits, rhma_site_assump, p_adjust = "bonferroni")
+# Show only significant
+rhma_site_ph_sig <- rhma_site_ph %>%
+  mutate(p = ifelse(!is.na(p.adj), p.adj, p.adj.signif)) %>%
+  filter((!is.na(p.adj) & p.adj < 0.05) | (!is.na(p) & suppressWarnings(as.numeric(p)) < 0.05))
+if (nrow(rhma_site_ph_sig) > 0) {
+  knitr::kable(rhma_site_ph_sig %>%
+                 select(trait, method, group1, group2, p.adj, p.adj.signif),
+               digits = 4,
+               caption = "RHMA: Significant Site Post-hoc Comparisons")
+} else {
+  cat("RHMA: No significant site pairwise differences after correction.\n")
+}
+```
+
+```{r}
+# Ensure treatment factor order
+rhma_clean <- rhma_clean %>%
+  mutate(treatment = factor(treatment,
+    levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")
+  ))
+
+# Long data for traits shown in p_rhma
+rhma_long <- rhma_clean %>%
+  pivot_longer(all_of(c("total_height","epi_length","diameter","mass")), names_to = "trait", values_to = "value")
+
+# Per-panel y positions (site × trait)
+rhma_ypos <- .panel_y_positions(rhma_long, panel_vars = c("site","trait"), x_var = "treatment")
+
+# Dunn + CLDs within each panel
+rhma_letters <- rhma_long %>%
+  drop_na(value) %>%
+  group_by(site, trait) %>%
+  group_modify(~{
+    if (n_distinct(.x$treatment) < 2) return(tibble())
+    pairs <- rstatix::dunn_test(.x, value ~ treatment, p.adjust.method = "bonferroni")
+    cld   <- .cld_from_pairs(pairs, level_order = levels(.x$treatment))
+    cld
+  }) %>%
+  ungroup() %>%
+  rename(treatment = group) %>%
+  left_join(rhma_ypos, by = c("site","trait")) %>%
+  mutate(label = Letters)
+
+# Add to plot
+p_rhma_letters <- p_rhma +
+  geom_text(
+    data = rhma_letters,
+    aes(x = treatment, y = y_pos_panel, label = label),
+    size = 3, vjust = 0
+  ) +
+  expand_limits(y = max(rhma_letters$y_pos_panel, na.rm = TRUE))
+
+print(p_rhma_letters)
+```
+
+
 ```{r comprehensive-rhma-analysis}
 # Generate complete statistical report for RHMA
 cat("Generating comprehensive RHMA statistical report...\n\n")
@@ -758,6 +960,8 @@ lara_clean <- lara_raw %>%
   slice(1) %>% 
   ungroup()
 
+lara_clean <- .make_site_factor(lara_clean)
+
 # Outlier detection
 lara_outliers <- detect_outliers(lara_clean, lara_traits)
 cat("LARA outliers detected:", nrow(lara_outliers), "\n")
@@ -814,6 +1018,72 @@ if (nrow(lara_sig) > 0) {
 p_lara <- create_boxplots(lara_clean, c("total_length", "width", "mass"), "LARA", trait_units)
 print(p_lara)
 ```
+
+```{r}
+# ---------- LARA: Site effect on baseline traits ----------
+lara_site_assump <- assess_site_assumptions(lara_clean, lara_traits)
+knitr::kable(lara_site_assump, digits = 4, caption = "LARA: Site-Only Assumption Checks")
+
+lara_site_omni <- run_site_omnibus(lara_clean, lara_traits, lara_site_assump) %>%
+  mutate(significant = ifelse(p < 0.05, "Yes", "No"))
+knitr::kable(lara_site_omni, digits = 4, caption = "LARA: Site Omnibus Tests (Baseline)")
+
+lara_site_ph <- site_posthoc(lara_clean, lara_traits, lara_site_assump, p_adjust = "bonferroni")
+lara_site_ph_sig <- lara_site_ph %>%
+  mutate(p = ifelse(!is.na(p.adj), p.adj, p.adj.signif)) %>%
+  filter((!is.na(p.adj) & p.adj < 0.05) | (!is.na(p) & suppressWarnings(as.numeric(p)) < 0.05))
+if (nrow(lara_site_ph_sig) > 0) {
+  knitr::kable(lara_site_ph_sig %>%
+                 select(trait, method, group1, group2, p.adj, p.adj.signif),
+               digits = 4,
+               caption = "LARA: Significant Site Post-hoc Comparisons")
+} else {
+  cat("LARA: No significant site pairwise differences after correction.\n")
+}
+```
+
+
+```{r}
+# Ensure same treatment factor as your plot
+lara_clean <- lara_clean %>%
+  mutate(treatment = factor(treatment,
+    levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")
+  ))
+
+# Long data for traits shown in p_lara
+lara_long <- lara_clean %>%
+  pivot_longer(all_of(c("total_length","width","mass")), names_to = "trait", values_to = "value")
+
+# Get per-panel y positions (site × trait)
+lara_ypos <- .panel_y_positions(lara_long, panel_vars = c("site","trait"), x_var = "treatment")
+
+# Dunn (Bonferroni) within each site × trait, then CLDs
+lara_letters <- lara_long %>%
+  drop_na(value) %>%
+  group_by(site, trait) %>%
+  group_modify(~{
+    if (n_distinct(.x$treatment) < 2) return(tibble())
+    pairs <- rstatix::dunn_test(.x, value ~ treatment, p.adjust.method = "bonferroni")
+    cld   <- .cld_from_pairs(pairs, level_order = levels(.x$treatment))
+    cld
+  }) %>%
+  ungroup() %>%
+  rename(treatment = group) %>%
+  left_join(lara_ypos, by = c("site","trait")) %>%
+  mutate(label = Letters)
+
+# Add letters to your existing plot p_lara
+p_lara_letters <- p_lara +
+  geom_text(
+    data = lara_letters,
+    aes(x = treatment, y = y_pos_panel, label = label),
+    size = 3, vjust = 0
+  ) +
+  expand_limits(y = max(lara_letters$y_pos_panel, na.rm = TRUE))
+
+print(p_lara_letters)
+```
+
 
 ```{r comprehensive-lara-analysis}
 # Generate complete statistical report for LARA
@@ -889,5 +1159,345 @@ if (exists("lara_sig")) {
 sessionInfo()
 ```
 
+```{r}
+# ─────────────────────────────────────────────────────────────
+# Setup
+# ─────────────────────────────────────────────────────────────
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 6)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(lubridate)
+  library(janitor)
+  library(car)
+  library(rstatix)
+  library(multcompView)
+  library(FSA)
+  library(forcats)
+})
+set.seed(20250901)
+
+# Palette / labels
+okabe_ito <- c("#E69F00","#56B4E9","#009E73","#F0E442","#0072B2","#D55E00","#CC79A7","#999999")
+treatment_map <- c("A"="Soil","B"="Crushed glass","C"="25% SG","D"="75% SG","E"="100% Sargassum (SG)")
+color_vals <- c("Soil"=okabe_ito[1],"Crushed glass"=okabe_ito[6],"25% SG"=okabe_ito[3],
+                "75% SG"=okabe_ito[2],"100% Sargassum (SG)"=okabe_ito[7])
+trait_units <- list( # for axis labels
+  diameter="mm", epi_length="cm", hypo_length="cm", total_height="cm", mass="g",
+  width="mm", prop_length="cm", rad_length="cm", total_length="cm"
+)
+
+# Output folder (works in Rmd & script)
+if (!exists("params") || is.null(params$out_dir)) params <- list(out_dir="analysis_outputs")
+dir.create(params$out_dir, showWarnings = FALSE, recursive = TRUE)
+
+# ─────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────
+parse_mdy_relaxed <- function(x) parse_date_time(x, orders=c("mdy","mdy HM","mdy HMS"))
+clean_numeric      <- function(x) suppressWarnings(as.numeric(str_replace_all(x, ",", "")))
+make_site_factor   <- function(df) df %>% mutate(site = fct_drop(as.factor(site)))
+
+detect_outliers <- function(data, traits) {
+  data |>
+    pivot_longer(all_of(traits), names_to="trait", values_to="value") |>
+    group_by(trait) |>
+    mutate(iqr = IQR(value, na.rm=TRUE),
+           Q1 = quantile(value, .25, na.rm=TRUE),
+           Q3 = quantile(value, .75, na.rm=TRUE),
+           is_outlier = value < (Q1-3*iqr) | value > (Q3+3*iqr)) |>
+    ungroup() |>
+    filter(is_outlier & !is.na(value))
+}
+
+# Site×Trait assumption branch (ANOVA / Welch / Kruskal) used for baseline site tests
+assess_site_assumptions <- function(data, traits){
+  map_dfr(traits, function(tr){
+    df <- data |> select(site, value = all_of(tr)) |> drop_na()
+    if (n_distinct(df$site) < 2 || nrow(df) < 8)
+      return(tibble(trait=tr, shapiro_p=NA, levene_p=NA, n=nrow(df)))
+    f  <- lm(value ~ site, data=df)
+    sp <- tryCatch(shapiro.test(residuals(f))$p.value, error=function(e) NA)
+    lp <- tryCatch(car::leveneTest(value ~ site, data=df)$`Pr(>F)`[1], error=function(e) NA)
+    tibble(trait=tr, shapiro_p=sp, levene_p=lp, n=nrow(df))
+  }) |>
+  mutate(
+    normal        = if_else(is.na(shapiro_p), "Unknown", if_else(shapiro_p>=.05,"OK","Violated")),
+    homoskedastic = if_else(is.na(levene_p),  "Unknown", if_else(levene_p>=.05,"OK","Violated")),
+    branch        = case_when(normal=="OK" & homoskedastic=="OK" ~ "ANOVA",
+                              normal=="OK" & homoskedastic=="Violated" ~ "Welch",
+                              TRUE ~ "Kruskal"))
+}
+
+run_site_omnibus <- function(data, traits, assumptions_tbl){
+  bind_rows(lapply(traits, function(tr){
+    df <- data |> select(site, value = all_of(tr)) |> drop_na()
+    if (n_distinct(df$site) < 2) return(tibble(trait=tr, test=NA, stat=NA, df1=NA, df2=NA, p=NA))
+    branch <- assumptions_tbl |> filter(trait==tr) |> pull(branch)
+    if (branch=="ANOVA") {
+      a <- summary(aov(value ~ site, data=df))[[1]]
+      tibble(trait=tr, test="ANOVA", stat=unname(a$`F value`[1]),
+             df1=a$Df[1], df2=a$Df[2], p=a$`Pr(>F)`[1])
+    } else if (branch=="Welch") {
+      w <- oneway.test(value ~ site, data=df, var.equal=FALSE)
+      tibble(trait=tr, test="Welch ANOVA", stat=unname(w$statistic),
+             df1=unname(w$parameter[1]), df2=unname(w$parameter[2]), p=w$p.value)
+    } else {
+      kw <- kruskal.test(value ~ site, data=df)
+      tibble(trait=tr, test="Kruskal-Wallis", stat=unname(kw$statistic),
+             df1=length(unique(df$site))-1, df2=NA, p=kw$p.value)
+    }
+  })) |>
+  mutate(significant = if_else(p < .05, "Yes", "No"))
+}
+
+site_posthoc <- function(data, traits, assumptions_tbl, p_adjust="bonferroni"){
+  out <- list()
+  for (tr in traits){
+    df <- data |> select(site, value = all_of(tr)) |> drop_na()
+    if (n_distinct(df$site) < 2) next
+    method <- (assumptions_tbl |> filter(trait==tr) |> pull(branch))[1]
+    out[[tr]] <-
+      if (identical(method,"ANOVA"))
+        tukey_hsd(aov(value ~ site, data=df)) |> mutate(trait=tr, method="Tukey HSD")
+      else if (identical(method,"Welch"))
+        games_howell_test(df, value ~ site) |> mutate(trait=tr, method="Games-Howell")
+      else
+        dunn_test(df, value ~ site, p.adjust.method=p_adjust) |>
+          mutate(trait=tr, method=paste0("Dunn (", p_adjust, ")"))
+  }
+  bind_rows(out)
+}
+
+# Compute CLD letters from a pairwise table (group1, group2, p.adj)
+.cld_from_pairs <- function(pairs_tbl, level_order) {
+  if (nrow(pairs_tbl) == 0) {
+    return(tibble(group = factor(level_order, levels = level_order), Letters = ""))
+  }
+  # Build a full p-value matrix in the specified order
+  lv <- level_order
+  M <- matrix(1, nrow = length(lv), ncol = length(lv), dimnames = list(lv, lv))
+  for (i in seq_len(nrow(pairs_tbl))) {
+    g1 <- as.character(pairs_tbl$group1[i])
+    g2 <- as.character(pairs_tbl$group2[i])
+    p  <- as.numeric(pairs_tbl$p.adj[i])
+    if (!is.na(g1) && !is.na(g2) && !is.na(p) && g1 %in% lv && g2 %in% lv) {
+      M[g1, g2] <- p
+      M[g2, g1] <- p
+    }
+  }
+  # multcompLetters wants a named vector of p-values for all pairs (upper triangle)
+  pv_named <- c()
+  for (i in seq_along(lv)) for (j in (i+1):length(lv)) {
+    if (j <= length(lv)) {
+      nm <- paste(lv[i], lv[j], sep = "-")
+      pv_named[nm] <- M[lv[i], lv[j]]
+    }
+  }
+  L <- multcompView::multcompLetters(pv_named, threshold = 0.05)$Letters
+  tibble(group = factor(names(L), levels = level_order),
+         Letters = unname(L))
+}
+
+# y-position right above each box (per site × trait × treatment)
+.get_box_y_positions <- function(data_long, panel_vars, x_var, y_var = "value", bump = 0.05) {
+  data_long %>%
+    group_by(across(all_of(c(panel_vars, x_var)))) %>%
+    summarise(y_max = max(.data[[y_var]], na.rm = TRUE), .groups = "drop") %>%
+    mutate(y_pos_box = y_max + (y_max * bump)) # e.g., 5% above the max
+}
+
+create_boxplots <- function(data, traits, species_name,
+                            trait_units = NULL,
+                            show_letters = TRUE,
+                            p_adjust = "bonferroni",
+                            bump = 0.05) {
+
+  # default units if not provided
+  if (is.null(trait_units)) {
+    trait_units <- list(
+      diameter="mm", epi_length="cm", hypo_length="cm", total_height="cm", mass="g",
+      width="mm", prop_length="cm", rad_length="cm", total_length="cm"
+    )
+  }
+
+  # long data + nice labels
+  long <- data %>%
+  pivot_longer(all_of(traits), names_to = "trait", values_to = "value") %>%
+  mutate(
+    treatment = factor(
+      dplyr::recode(as.character(treatment), !!!treatment_map),
+      levels = c("Soil","Crushed glass","25% SG","75% SG","100% Sargassum (SG)")
+    )
+  ) %>%
+  rowwise() %>%
+  mutate(
+    trait_label = {
+      base <- stringr::str_to_title(gsub("_"," ", trait))
+      if (trait %in% names(trait_units)) paste0(base, " (", trait_units[[trait]], ")") else base
+    }
+  ) %>%
+  ungroup()
+
+  # base plot
+  p <- ggplot(long, aes(x = treatment, y = value, fill = treatment)) +
+    geom_boxplot(outlier.alpha = 0.5, alpha = 0.7) +
+    geom_jitter(width = 0.15, alpha = 0.4, size = 1) +
+    scale_fill_manual(values = color_vals) +
+    facet_grid(trait_label ~ site, scales = "free_y") +
+    labs(x = "Treatment", y = "Measurement") +
+    theme_bw(base_size = 11) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none",
+      strip.text = element_text(size = 10),
+      strip.text.y = element_text(size = 9)
+    )
+
+  if (!show_letters) return(p)
+
+  # y positions right above each box (site × trait × treatment)
+  ypos <- .get_box_y_positions(
+    data_long  = long,
+    panel_vars = c("site","trait_label"),
+    x_var      = "treatment",
+    y_var      = "value",
+    bump       = bump
+  )
+
+  # Dunn (Bonferroni) within each site × trait; turn into CLDs
+  letters_df <- long %>%
+    drop_na(value) %>%
+    group_by(site, trait_label) %>%
+    group_modify(~{
+      if (n_distinct(.x$treatment) < 2) return(tibble())
+      # safer: catch edge cases
+      pairs <- tryCatch(
+        rstatix::dunn_test(.x, value ~ treatment, p.adjust.method = p_adjust),
+        error = function(e) tibble(group1 = character(), group2 = character(), p.adj = numeric())
+      )
+      cld <- .cld_from_pairs(pairs, level_order = levels(.x$treatment))
+      cld
+    }) %>%
+    ungroup() %>%
+    rename(treatment = group) %>%
+    left_join(ypos, by = c("site","trait_label","treatment")) %>%
+    distinct(site, trait_label, treatment, .keep_all = TRUE) %>%  # avoid duplicates
+    mutate(label = Letters)
+
+  # add letters just above the boxes
+  p + geom_text(
+        data = letters_df,
+        aes(x = treatment, y = y_pos_box, label = label),
+        size = 3, vjust = 0
+      )
+}
+
+# Convenience: summary stats (site×treatment×trait)
+summarise_traits <- function(df, traits){
+  df |>
+    pivot_longer(all_of(traits), names_to="trait") |>
+    group_by(site, treatment, trait) |>
+    summarise(n=sum(!is.na(value)), mean=mean(value, na.rm=TRUE),
+              sd=sd(value, na.rm=TRUE), .groups="drop") |>
+    mutate(mean_sd = sprintf("%.2f ± %.2f", mean, sd))
+}
+
+# ─────────────────────────────────────────────────────────────
+# RHMA
+# ─────────────────────────────────────────────────────────────
+rhma_path <- "C:/Users/sarai/OneDrive/Email attachments/Documents/UVI/Thesis.Work/SargMangs/Data/RHMA_IntakeData.csv"
+
+rhma_traits <- c("diameter","epi_length","hypo_length","total_height","mass")
+rhma_raw <- read_csv(rhma_path, show_col_types = FALSE) |> clean_names()
+
+rhma_clean <- rhma_raw |>
+  mutate(
+    intake_date = parse_mdy_relaxed(intake_date),
+    collection_date_clean = str_extract(collection_date, "\\b\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?\\b"),
+    collection_date_clean = if_else(str_detect(collection_date_clean, "^\\d{1,2}/\\d{1,2}$"),
+                                    paste0(collection_date_clean,"/2024"), collection_date_clean),
+    collection_date = suppressWarnings(mdy(collection_date_clean)),
+    across(all_of(rhma_traits), clean_numeric),
+    treatment = dplyr::recode(as.character(treatment), !!!treatment_map)
+  ) |>
+  filter(!is.na(intake_date)) |>
+  arrange(prop_id, intake_date) |>
+  group_by(prop_id) |> slice(1) |> ungroup() |>
+  make_site_factor()
+
+rhma_outliers <- detect_outliers(rhma_clean, rhma_traits)
+cat("RHMA outliers detected:", nrow(rhma_outliers), "\n")
+
+# Site-only baseline tests (biology-first framing)
+rhma_site_assump <- assess_site_assumptions(rhma_clean, rhma_traits)
+rhma_site_omni   <- run_site_omnibus(rhma_clean, rhma_traits, rhma_site_assump)
+rhma_site_ph     <- site_posthoc(rhma_clean, rhma_traits, rhma_site_assump, p_adjust="bonferroni")
+
+knitr::kable(summarise_traits(rhma_clean, rhma_traits) |> select(site,treatment,trait,n,mean_sd),
+             caption="RHMA Summary Statistics")
+knitr::kable(rhma_site_assump, digits=4, caption="RHMA: Site-Only Assumption Checks")
+knitr::kable(rhma_site_omni,   digits=4, caption="RHMA: Site Omnibus Tests (Baseline)")
+if (nrow(rhma_site_ph)) {
+  knitr::kable(rhma_site_ph |> filter(!is.na(p.adj) & p.adj < .05) |>
+                 select(trait,method,group1,group2,p.adj,p.adj.signif),
+               caption="RHMA: Significant Site Post-hoc Comparisons")
+}
+
+p_rhma <- create_boxplots(rhma_clean, c("total_height","epi_length","diameter","mass"), "RHMA", trait_units)
+print(p_rhma)
+
+# ─────────────────────────────────────────────────────────────
+# LARA
+# ─────────────────────────────────────────────────────────────
+lara_path <- "C:/Users/sarai/OneDrive/Email attachments/Documents/UVI/Thesis.Work/SargMangs/Data/LARA_IntakeData.csv"
+
+lara_traits <- c("width","prop_length","rad_length","total_length","mass")
+lara_raw <- read_csv(lara_path, show_col_types = FALSE) |> clean_names()
+
+lara_clean <- lara_raw |>
+  mutate(
+    intake_date = parse_mdy_relaxed(intake_date),
+    collection_date_clean = str_extract(collection_date, "\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b"),
+    collection_date = parse_mdy_relaxed(collection_date_clean),
+    across(all_of(lara_traits), clean_numeric),
+    treatment = dplyr::recode(as.character(treatment), !!!treatment_map),
+    species = "LARA"
+  ) |>
+  filter(!is.na(intake_date)) |>
+  arrange(prop_id, intake_date) |>
+  group_by(prop_id) |> slice(1) |> ungroup() |>
+  make_site_factor()
+
+lara_outliers <- detect_outliers(lara_clean, lara_traits)
+cat("LARA outliers detected:", nrow(lara_outliers), "\n")
+
+lara_site_assump <- assess_site_assumptions(lara_clean, lara_traits)
+lara_site_omni   <- run_site_omnibus(lara_clean, lara_traits, lara_site_assump)
+lara_site_ph     <- site_posthoc(lara_clean, lara_traits, lara_site_assump, p_adjust="bonferroni")
+
+knitr::kable(summarise_traits(lara_clean, lara_traits) |> select(site,treatment,trait,n,mean_sd),
+             caption="LARA Summary Statistics")
+knitr::kable(lara_site_assump, digits=4, caption="LARA: Site-Only Assumption Checks")
+knitr::kable(lara_site_omni,   digits=4, caption="LARA: Site Omnibus Tests (Baseline)")
+if (nrow(lara_site_ph)) {
+  knitr::kable(lara_site_ph |> filter(!is.na(p.adj) & p.adj < .05) |>
+                 select(trait,method,group1,group2,p.adj,p.adj.signif),
+               caption="LARA: Significant Site Post-hoc Comparisons")
+}
+
+p_lara <- create_boxplots(lara_clean, c("total_length","width","mass"), "LARA", trait_units)
+print(p_lara)
+
+# ─────────────────────────────────────────────────────────────
+# Summary
+# ─────────────────────────────────────────────────────────────
+cat("Analysis Summary:\n================\n")
+cat("RHMA traits:", length(rhma_traits), " | LARA traits:", length(lara_traits), "\n")
+cat("Total samples — RHMA:", nrow(rhma_clean), " | LARA:", nrow(lara_clean), "\n")
+cat("Outliers — RHMA:", nrow(rhma_outliers), " | LARA:", nrow(lara_outliers), "\n")
+
+```
 
 
