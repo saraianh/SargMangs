@@ -1,0 +1,1014 @@
+---
+title: "Compaction"
+author: "Sarai Hutchinson"
+date: "2025-10-06"
+output: html_document
+---
+
+I want to calculate compaction overtime by looking at the rate of change between the height1 and height2 for both LARA and RHMA.
+
+I have to come back and review the raw data to see why month 1 has such a high settling. I think it might be due to me not adding a height from the pot to the seed at the beginning. will get that added to the data.
+
+```{r}
+# ============================================================
+# 0) Libraries & Setup
+# ============================================================
+
+# Palettes
+okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7", "#999999")
+color_vals <- c(
+  "Soil"                = okabe_ito[1],
+  "Glass"               = okabe_ito[6],
+  "25% SG"              = okabe_ito[3],
+  "75% SG"              = okabe_ito[2],
+  "100% SG"             = okabe_ito[7]
+)
+
+# Define shapes for each Treatment_Name
+shape_vals <- c(
+  "Soil"                = 0,  # open square
+  "Glass"       = 17, # filled triangle
+  "25% SG"              = 18, # filled diamond
+  "75% SG"              = 8,  # asterisk
+  "100% SG" = 15  # filled square
+)
+
+# Define colors using okabe_ito palette
+color_vals <- c(
+  "Soil"                = okabe_ito[1], # green  (#009E73)
+  "Glass"       = okabe_ito[6], # blue   (#0072B2)
+  "25% SG"              = okabe_ito[3], # orange (#E69F00)
+  "75% SG"              = okabe_ito[2], # vermillion (#D55E00)
+  "100% SG" = okabe_ito[7]  # purple (#CC79A7)
+)
+
+# ============================================================
+# 1) Load & Inspect Raw Data
+# ============================================================
+data_path <- "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/Hutchinson_MonitoringAndIntake_Sites.csv"
+raw_data  <- readr::read_csv(data_path, show_col_types = FALSE)
+
+cat("Data structure:\n"); str(raw_data)
+cat("\nFirst few rows:\n"); print(head(raw_data))
+cat("\nColumn names:\n"); print(names(raw_data))
+cat("\nMissing values by column:\n"); print(colSums(is.na(raw_data)))
+```
+
+```{r}
+# ============================================================
+# 2) Tidy to Wide (per plant) & Harmonize Columns
+# ============================================================
+processed_raw <- raw_data %>%
+  mutate(
+    Treatment_Name = case_when(
+      Treatment == "A" ~ "Soil",
+      Treatment == "B" ~ "Glass",
+      Treatment == "C" ~ "100% SG",
+      Treatment == "D" ~ "25% SG",
+      Treatment == "E" ~ "75% SG",
+      TRUE ~ as.character(Treatment)
+    ),
+    Treatment_Name = factor(
+      Treatment_Name,
+      levels = c("Soil", "Glass", "25% SG", "75% SG", "100% SG")
+    )
+  )
+
+# 0) Start from your processed_raw that already has Treatment_Name
+# processed_raw <- raw_data %>% ... (your mutate for Treatment_Name above)
+
+library(dplyr)
+library(stringr)
+
+# Common (non–species-specific) columns you want to keep
+common_cols <- c(
+  "Data_Uploaded","Date_Uploaded","Monitored_By","Date_Monitored",
+  "Location","Replicate","Site","Species","Treatment","Treatment_Name",
+  "Prop_ID","Time_Period","Survivorship","Condition","Pests","Leaf_Color",
+  "Number_Branches","Leaves_Main","Leaves_Branches","Total_Leaves",
+  "Nodes_Main","Nodes_Branches","Total_Nodes","Notes"
+)
+
+# Helper to strip units/symbols safely before numeric coercion
+num_clean <- function(x) as.numeric(gsub("[^0-9.-]", "", x))
+
+# ---- RHMA-only dataset ----
+rhma_dat <- processed_raw %>%
+  filter(Species == "RHMA") %>%
+  # keep common cols + RHMA_*; drop any LARA_* automatically
+  select(all_of(common_cols), starts_with("RHMA_")) %>%
+  # coerce character counts to integers
+  mutate(across(c(Number_Branches, Leaves_Main, Leaves_Branches,
+                  Total_Leaves, Nodes_Main, Nodes_Branches, Total_Nodes),
+                ~ suppressWarnings(as.integer(num_clean(.x))))) %>%
+  # coerce RHMA measurements to numeric
+  mutate(across(starts_with("RHMA_"), ~ suppressWarnings(num_clean(.x)))) %>%
+  # rename species-specific cols to generic for easier downstream use
+  rename(
+    Height_1  = RHMA_Height_1,
+    Height_2  = RHMA_Height_2,
+    Epi_Length = RHMA_Epi_Length
+  ) %>%
+  # derive pot→substrate gap
+  mutate(PS_gap = Height_1 - Height_2)%>%
+  mutate(Treatment_Name = factor(
+      Treatment_Name,
+      levels = c("Soil", "Glass", "25% SG", "75% SG", "100% SG")
+    ))
+
+
+#I want to add a general height_2 data for TP0 for all the props of 2.54cm (1 inch below the pot)
+# ---- LARA-only dataset ----
+lara_dat <- processed_raw %>%
+  filter(Species == "LARA") %>%
+  select(all_of(common_cols), starts_with("LARA_")) %>%
+  mutate(across(c(Number_Branches, Leaves_Main, Leaves_Branches,
+                  Total_Leaves, Nodes_Main, Nodes_Branches, Total_Nodes),
+                ~ suppressWarnings(as.integer(num_clean(.x))))) %>%
+  mutate(across(starts_with("LARA_"), ~ suppressWarnings(num_clean(.x)))) %>%
+  rename(Height_1 = LARA_Height_1,
+         Height_2 = LARA_Height_2) %>%
+  # --- set TP0 Height_2 to -2.54 cm (1 inch below rim) ---
+  mutate(Height_2 = if_else(as.numeric(Time_Period) == 0, -2.54, Height_2)) %>%
+  # recompute gap
+  mutate(PS_gap = Height_1 - Height_2) %>%
+  mutate(Treatment_Name = factor(Treatment_Name,
+         levels = c("Soil","Glass","25% SG","75% SG","100% SG")))
+
+# ---- LARA-only dataset ----
+lara_dat2 <- processed_raw %>%
+  filter(Species == "LARA") %>%
+  select(all_of(common_cols), starts_with("LARA_")) %>%
+  mutate(across(c(Number_Branches, Leaves_Main, Leaves_Branches,
+                  Total_Leaves, Nodes_Main, Nodes_Branches, Total_Nodes),
+                ~ suppressWarnings(as.integer(num_clean(.x))))) %>%
+  mutate(across(starts_with("LARA_"), ~ suppressWarnings(num_clean(.x)))) %>%
+  rename(Height_1 = LARA_Height_1,
+         Height_2 = LARA_Height_2) %>%
+  # --- set TP0 Height_2 to -2.54 cm (1 inch below rim) ---
+  mutate(Height_2 = if_else(as.numeric(Time_Period) == 0, -2.54, Height_2)) %>%
+  # recompute gap
+  mutate(PS_gap = Height_1 - Height_2) %>%
+  mutate(Treatment_Name = factor(Treatment_Name,
+         levels = c("Soil","Glass","25% SG","75% SG","100% SG")))
+
+# (Optional) quick checks
+colnames(rhma_dat)
+colnames(lara_dat)
+
+summary(select(rhma_dat, Height_1, Height_2, PS_gap))
+summary(select(lara_dat, Height_1, Height_2, PS_gap))
+summary(select(lara_dat2, Height_1, Height_2, PS_gap))
+```
+
+
+```{r eval=FALSE, include=FALSE}
+# Check which values failed to convert
+processed_raw %>%
+  summarise(across(c(RHMA_Height_1, RHMA_Height_2, LARA_Height_1, LARA_Height_2),
+                   ~sum(is.na(as.numeric(.x)) & !is.na(.x))))
+processed_raw %>%
+  filter(!grepl("^[0-9.]+$", RHMA_Height_1)) %>%
+  select(RHMA_Height_1)
+
+
+
+library(dplyr)
+library(tidyr)
+
+dat <- processed_raw %>%
+  mutate(
+    RHMA_Height_1 = as.numeric(RHMA_Height_1),
+    RHMA_Height_2 = as.numeric(RHMA_Height_2),
+    LARA_Height_1 = as.numeric(LARA_Height_1),
+    LARA_Height_2 = as.numeric(LARA_Height_2)
+  ) %>%
+  # Compute pot->substrate gap (PS) per species at each visit
+  mutate(
+    PS_gap = case_when(
+      Species == "RHMA" ~ RHMA_Height_1 -RHMA_Height_2 ,
+      Species == "LARA" ~ LARA_Height_1- LARA_Height_2,
+      TRUE ~ NA_real_
+    )
+  )
+
+colSums(is.na(dat[c("RHMA_Height_1","RHMA_Height_2","LARA_Height_1","LARA_Height_2")]))
+
+```
+
+
+```{r}
+# PS_gap should generally increase over time (settlement) for many treatments
+lara_dat %>%
+  group_by(Treatment_Name, Time_Period) %>%
+  summarise(mean_PS = mean(PS_gap, na.rm = TRUE), .groups = "drop") %>%
+  arrange(Treatment_Name, Time_Period) %>%
+  print(n = 20)
+
+# Get a per-plant baseline (use first observation; or Time_Period == 1 if guaranteed)
+baseline_L <- lara_dat %>%
+  arrange(Prop_ID, Time_Period) %>%
+  group_by(Prop_ID) %>%
+  filter(!is.na(PS_gap)) %>%
+  slice(1) %>%                      # earliest non-missing
+  transmute(Prop_ID, PS0 = PS_gap) %>%
+  ungroup()
+
+#this section is redundant. lara_comp fixes those errors.
+# dat_comp_L <- lara_dat %>%
+#   left_join(baseline_L, by = "Prop_ID") %>%
+#   mutate(
+#     compaction_cm = PS_gap - PS0  # negative = more settlement vs baseline
+#   )
+# 
+# 
+# #QAQC
+# # Should be near zero at baseline by construction
+# dat_comp_L %>% filter(Time_Period == min(Time_Period)) %>%
+#   summarise(mean0 = mean(compaction_cm, na.rm = TRUE))
+
+
+# Compaction = increase in PS gap from each plant’s baseline (t0)
+lara_comp <- lara_dat %>%
+  arrange(Prop_ID, Time_Period) %>%
+  group_by(Prop_ID) %>%
+  mutate(
+    PS0 = first(PS_gap[!is.na(PS_gap)]),
+    compaction_cm = PS_gap - PS0,
+    compaction_cm = pmax(compaction_cm, 0)  # optional: forbid negative compaction
+  ) %>%
+  ungroup()
+
+
+# Summary over time by treatment & species
+compaction_summary_L <- lara_comp %>%
+  filter(!is.na(compaction_cm)) %>%
+  group_by(Treatment_Name, Time_Period) %>%
+  summarise(
+    n = n(),
+    mean_compaction = mean(compaction_cm),
+    se_compaction = if (n() > 1) sd(compaction_cm)/sqrt(n()) else NA_real_,
+    .groups = "drop"
+  )
+
+# Final month (6)
+final_compaction_L <- compaction_summary_L %>% filter(Time_Period == 6)
+
+compaction_rate_L <- compaction_summary_L %>%
+  group_by(Treatment_Name) %>%
+  summarise(
+    total_compaction = max(mean_compaction, na.rm = TRUE),
+    rate_cm_per_month = total_compaction / 6
+  )
+
+ggplot(compaction_summary_L, aes(x = Time_Period, y = mean_compaction,
+                               color = Treatment_Name, group = Treatment_Name)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_compaction - se_compaction,
+                    ymax = mean_compaction + se_compaction),
+                width = 0.15) +
+  labs(
+    x = "Monitoring Month",
+    y = "Mean Compaction (cm)",
+    color = "Treatment"
+    # title = "Substrate Compaction Over Time by Treatment and Species"
+  ) +
+  theme_minimal()
+
+
+# Optional: rate (cm/month) from baseline to month 6
+rate_by_treat_L <- compaction_summary_L %>%
+  filter(Time_Period == 6) %>%
+  transmute(Treatment_Name,
+            rate_cm_per_month = mean_compaction / 6)
+rate_by_treat_L
+
+
+#Code to add significance letters to the plot
+# helper: convert Dunn/Holm pairwise p-values to compact letters
+pairs_to_letters <- function(pairs, alpha = 0.05){
+  lvls <- sort(unique(c(pairs$group1, pairs$group2)))
+  M <- matrix(1, nrow = length(lvls), ncol = length(lvls),
+              dimnames = list(lvls, lvls))
+  for (i in seq_len(nrow(pairs))) {
+    g1 <- pairs$group1[i]; g2 <- pairs$group2[i]
+    p  <- pairs$p.adj[i];  if (is.na(p)) p <- 1
+    M[g1, g2] <- p; M[g2, g1] <- p
+  }
+  sigMat <- M < alpha
+  out <- multcompView::multcompLetters(sigMat)
+  tibble(Treatment_Name = names(out$Letters),
+         Letters = unname(out$Letters))
+}
+
+min_n_group <- 2  # hide letters for groups with <2 observations at a month
+
+# Individual-level data for LARA
+dat_comp_L <- lara_comp %>%
+  select(Prop_ID, Time_Period, Treatment_Name, compaction_cm)
+
+# 1) Letters per Time_Period (KW -> Dunn/Holm), with safe fallbacks and hiding non-sig months
+letters_by_month_L <- dat_comp_L %>%
+  filter(!is.na(compaction_cm), !is.na(Treatment_Name), !is.na(Time_Period)) %>%
+  group_by(Time_Period) %>%
+  group_modify(~{
+    df <- .x
+
+    # drop groups with < min_n_group obs at this month
+    df2 <- df %>% group_by(Treatment_Name) %>% filter(n() >= min_n_group) %>% ungroup()
+
+    # Need at least 2 groups and some variation to test
+    if (n_distinct(df2$Treatment_Name) < 2 || n_distinct(df2$compaction_cm) < 2) {
+      # no letters shown (keep plot clean when nothing to test)
+      return(tibble(Treatment_Name = unique(df$Treatment_Name), Letters = ""))
+    }
+
+    kw <- suppressWarnings(rstatix::kruskal_test(df2, compaction_cm ~ Treatment_Name))
+    if (is.na(kw$p) || kw$p >= 0.05) {
+      # overall not significant -> hide letters
+      return(tibble(Treatment_Name = unique(df$Treatment_Name), Letters = ""))
+    }
+
+    # post-hoc Dunn with Holm correction -> letters
+    dunn <- rstatix::dunn_test(df2, compaction_cm ~ Treatment_Name,
+                               p.adjust.method = "holm") %>%
+      mutate(p.adj = ifelse(is.na(p.adj), 1, p.adj))
+    pairs_to_letters(dunn, alpha = 0.05)
+  }) %>%
+  ungroup()
+
+
+# bump above error bars
+yrange_L <- diff(range(compaction_summary_L$mean_compaction +
+                         dplyr::coalesce(compaction_summary_L$se_compaction, 0), na.rm = TRUE))
+if (!is.finite(yrange_L) || yrange_L == 0) yrange_L <- 1
+bump_L <- 0.08 * yrange_L
+
+# 2) Join letters to your summary; blank letters for small n at that month # join letters (assumes letters_by_month_L already made)
+annot_L <- compaction_summary_L %>%
+  left_join(letters_by_month_L, by = c("Time_Period","Treatment_Name")) %>%
+  mutate(Letters = if_else(is.na(Letters) | n < 2, "", Letters)) %>%
+  filter(Letters != "")
+
+# fixed x-offset per treatment
+treat_levels <- levels(compaction_summary_L$Treatment_Name)
+offsets <- setNames(seq(-0.15, 0.15, length.out = length(treat_levels)), treat_levels)
+
+g<- ggplot(compaction_summary_L,
+       aes(Time_Period, mean_compaction, color = Treatment_Name, group = Treatment_Name)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_compaction - se_compaction,
+                    ymax = mean_compaction + se_compaction), width = 0.15) +
+  geom_text(
+    data = annot_L,
+    aes(
+      x = Time_Period + offsets[as.character(Treatment_Name)],      # jittered x
+      y = mean_compaction + dplyr::coalesce(se_compaction, 0) + bump_L,  # on-the-fly y
+      label = Letters
+    ),
+    vjust = 0, fontface = "bold", size = 3, show.legend = FALSE, na.rm = TRUE
+  ) +
+  scale_x_continuous(breaks = sort(unique(compaction_summary_L$Time_Period))) +
+  scale_y_continuous(limits = c(0, 14), breaks = seq(0, 14, by = 2)) +
+  labs(title= "LARA", x = "Monitoring Month", y = "Mean Compaction (cm)", color = "Treatment") +
+  coord_cartesian(clip = "off") +
+  theme_minimal()
+g
+
+kw_results_L <- lara_comp %>%
+  filter(!is.na(compaction_cm), !is.na(Treatment_Name), !is.na(Time_Period)) %>%
+  group_by(Time_Period) %>%
+  group_modify(~{
+    df <- .x %>% group_by(Treatment_Name) %>% filter(n() >= 2) %>% ungroup()
+    if (n_distinct(df$Treatment_Name) < 2 || n_distinct(df$compaction_cm) < 2) {
+      tibble(
+        n_groups = n_distinct(df$Treatment_Name),
+        n_total  = nrow(df),
+        statistic = NA_real_, df = NA_integer_, p = NA_real_,
+        p_signif = NA_character_, effsize = NA_real_,
+        eff_low  = NA_real_, eff_high = NA_real_,
+        note = "Too few groups or no variation"
+      )
+    } else {
+      kw  <- rstatix::kruskal_test(df, compaction_cm ~ Treatment_Name)
+      eff <- rstatix::kruskal_effsize(df, compaction_cm ~ Treatment_Name, ci = TRUE)
+      tibble(
+        n_groups = n_distinct(df$Treatment_Name),
+        n_total  = nrow(df),
+        statistic = kw$statistic, df = kw$df, p = kw$p,
+        p_signif = p_stars(kw$p),
+        effsize  = eff$effsize,        # epsilon^2
+        eff_low  = eff$conf.low,       # 95% CI
+        eff_high = eff$conf.high,
+        note = NA_character_
+      )
+    }
+  }) %>%
+  ungroup() %>%
+  mutate(p_fmt = rstatix::p_format(p)) %>%
+  arrange(Time_Period)
+
+kw_table_L <- kw_results_L %>%
+  mutate(
+    `95% CI [ε²]` = sprintf("[%.2f, %.2f]", eff_low, eff_high)
+  ) %>%
+  transmute(
+    Month = Time_Period,
+    `Treatments (k)` = n_groups,
+    `Plants (N)` = n_total,
+    `KW χ²` = round(statistic, 2),
+    df = df,
+    p = p_fmt,                 # from rstatix::p_format
+    `ε²` = round(effsize, 2),
+    `95% CI [ε²]`,
+    Notes = note
+  )
+```
+
+
+```{r eval=FALSE, include=FALSE}
+# Get a per-plant baseline (use first observation; or Time_Period == 1 if guaranteed)
+baseline_L <- lara_dat2 %>%
+  arrange(Prop_ID, Time_Period) %>%
+  group_by(Prop_ID) %>%
+  filter(!is.na(PS_gap)) %>%
+  slice(1) %>%                      # earliest non-missing
+  transmute(Prop_ID, PS0 = PS_gap) %>%
+  ungroup()
+
+dat_comp_L <- lara_dat2 %>%
+  left_join(baseline_L, by = "Prop_ID") %>%
+  mutate(
+    compaction_cm = PS_gap - PS0  # negative = more settlement vs baseline
+  )
+
+# Compaction = increase in PS gap from each plant’s baseline (t0)
+lara_comp <- lara_dat2 %>%
+  arrange(Prop_ID, Time_Period) %>%
+  group_by(Prop_ID) %>%
+  mutate(
+    PS0 = first(PS_gap[!is.na(PS_gap)]),
+    compaction_cm = PS_gap - PS0,
+    compaction_cm = pmax(compaction_cm, 0)  # optional: forbid negative compaction
+  ) %>%
+  ungroup()
+
+
+#QAQC
+# Should be near zero at baseline by construction
+dat_comp_L %>% filter(Time_Period == min(Time_Period)) %>%
+  summarise(mean0 = mean(compaction_cm, na.rm = TRUE))
+
+# PS_gap should generally increase over time (settlement) for many treatments
+lara_dat %>%
+  group_by(Treatment_Name, Time_Period) %>%
+  summarise(mean_PS = mean(PS_gap, na.rm = TRUE), .groups = "drop") %>%
+  arrange(Treatment_Name, Time_Period) %>%
+  print(n = 20)
+
+
+# Summary over time by treatment & species
+compaction_summary_L <- lara_comp %>%
+  filter(!is.na(compaction_cm)) %>%
+  group_by(Treatment_Name, Time_Period) %>%
+  summarise(
+    n = n(),
+    mean_compaction = mean(compaction_cm),
+    se_compaction = if (n() > 1) sd(compaction_cm)/sqrt(n()) else NA_real_,
+    .groups = "drop"
+  )
+
+# Final month (6)
+final_compaction_L <- compaction_summary_L %>% filter(Time_Period == 6)
+
+compaction_rate_L <- compaction_summary_L %>%
+  group_by(Treatment_Name) %>%
+  summarise(
+    total_compaction = max(mean_compaction, na.rm = TRUE),
+    rate_cm_per_month = total_compaction / 6
+  )
+
+ggplot(compaction_summary_L, aes(x = Time_Period, y = mean_compaction,
+                               color = Treatment_Name, group = Treatment_Name)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_compaction - se_compaction,
+                    ymax = mean_compaction + se_compaction),
+                width = 0.15) +
+  labs(
+    x = "Monitoring Month",
+    y = "Mean Compaction (cm)",
+    color = "Treatment"
+    # title = "Substrate Compaction Over Time by Treatment and Species"
+  ) +
+  theme_minimal()
+
+
+# Optional: rate (cm/month) from baseline to month 6
+rate_by_treat_L <- compaction_summary_L %>%
+  filter(Time_Period == 6) %>%
+  transmute(Treatment_Name,
+            rate_cm_per_month = mean_compaction / 6)
+rate_by_treat_L
+```
+
+```{r echo=FALSE}
+# ---- Packages ---------------------------------------------------------------
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(car)          # Levene test
+library(agricolae)    # HSD.test (Tukey letters)
+library(rstatix)      # dunn_test
+library(multcompView) # multcompLetters
+
+alpha <- 0.05
+
+# ---- Helper: letters from Dunn (Holm) after KW ------------------------------
+letters_from_dunn <- function(pairs, alpha = 0.05) {
+  trts <- sort(unique(c(pairs$group1, pairs$group2)))
+  M <- matrix(TRUE, length(trts), length(trts), dimnames = list(trts, trts))
+  # Mark pairs that ARE significantly different as FALSE (no shared letter)
+  pairs %>%
+    mutate(sig = p.adj <= alpha) %>%
+    rowwise() %>%
+    do({
+      g1 <- .$group1; g2 <- .$group2; sig <- .$sig
+      if (isTRUE(sig)) {
+        M[g1, g2] <<- FALSE
+        M[g2, g1] <<- FALSE
+      }
+      data.frame()
+    })
+  tibble(Treatment_Name = names(multcompView::multcompLetters(M)$Letters),
+         Letters = multcompView::multcompLetters(M)$Letters)
+}
+
+# ---- Function: month-6 test + letters for one species -----------------------
+letters_month6_for_species <- function(dat_comp, alpha = 0.05) {
+  df6 <- dat_comp %>%
+    filter(Time_Period == 6, !is.na(compaction_cm))
+
+  # summary (keep all groups for reporting)
+  sum6 <- df6 %>%
+    group_by(Treatment_Name) %>%
+    summarise(n = n(),
+              mean_compaction = mean(compaction_cm),
+              se_compaction   = if (n() > 1) sd(compaction_cm)/sqrt(n()) else NA_real_,
+              .groups = "drop")
+
+  # For INFERENCE only, drop tiny groups (n < 2)
+  infer <- df6 %>%
+    group_by(Treatment_Name) %>% filter(n() >= 2) %>% ungroup()
+
+  # Choose test
+  # Try ANOVA assumptions on inference subset
+  use_anova <- FALSE
+  if (n_distinct(infer$Treatment_Name) >= 2) {
+    aov_fit <- aov(compaction_cm ~ Treatment_Name, data = infer)
+    shp_ok  <- tryCatch(shapiro.test(residuals(aov_fit))$p.value > alpha, error = function(e) FALSE)
+    lev_ok  <- tryCatch(car::leveneTest(compaction_cm ~ Treatment_Name, data = infer)[1, "Pr(>F)"] > alpha,
+                        error = function(e) FALSE)
+    use_anova <- isTRUE(shp_ok) && isTRUE(lev_ok)
+  }
+
+  if (isTRUE(use_anova)) {
+    # One-way ANOVA + Tukey (agricolae gives letters directly)
+    hsd <- agricolae::HSD.test(aov_fit, "Treatment_Name", group = TRUE)
+    lets <- tibble(Treatment_Name = rownames(hsd$groups),
+                   Letters = hsd$groups$groups)
+    test_info <- tibble(method = "ANOVA + Tukey HSD",
+                        shapiro_p = tryCatch(shapiro.test(residuals(aov_fit))$p.value, error = function(e) NA_real_),
+                        levene_p  = tryCatch(car::leveneTest(compaction_cm ~ Treatment_Name, data = infer)[1, "Pr(>F)"], error = function(e) NA_real_),
+                        anova_p   = summary(aov_fit)[[1]][["Pr(>F)"]][1])
+  } else {
+    # Kruskal–Wallis + Dunn (Holm) + letters from pairwise p-values
+    kw <- rstatix::kruskal_test(infer, compaction_cm ~ Treatment_Name)
+    dunn <- rstatix::dunn_test(infer, compaction_cm ~ Treatment_Name, p.adjust.method = "holm")
+    lets <- letters_from_dunn(dunn, alpha = alpha)
+    test_info <- tibble(method = "Kruskal–Wallis + Dunn (Holm)",
+                        kw_p = kw$p)
+  }
+
+  # Merge letters with full summary (n<2 will have NA letters)
+  out <- sum6 %>%
+    left_join(lets, by = "Treatment_Name") %>%
+    arrange(Treatment_Name)
+
+  list(summary_table = out, test_info = test_info, kw=kw)
+}
+
+# ---- Run for both species ---------------------------------------------------
+L_out <- letters_month6_for_species(dat_comp_L, alpha = alpha)
+
+L_table <- L_out$summary_table
+L_test  <- L_out$test_info
+print(L_out$kw)
+
+L_table
+L_test
+
+# ---- Plot: month-6 compaction with letters (one panel per species) ----------
+plot_m6 <- function(tab, species_label) {
+  dodge <- position_dodge(width = 0.6)
+  ggplot(tab, aes(x = Treatment_Name, y = mean_compaction)) +
+    geom_pointrange(aes(ymin = mean_compaction - se_compaction,
+                        ymax = mean_compaction + se_compaction),
+                    position = dodge, size = 0.6) +
+    geom_text(aes(y = mean_compaction - ifelse(mean_compaction >= 0, 1.05*abs(se_compaction), 1.05*abs(se_compaction)) - 0.3,
+                  label = Letters),
+              vjust = 1, size = 5, fontface = "bold", na.rm = TRUE) +
+    labs(x = "Treatment", y = "Compaction at Month 6 (cm)",
+         title = species_label) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1))
+}
+
+p_L <- plot_m6(L_table, "L. racemosa — Month 6 Compaction")
+
+p_L
+```
+
+```{r}
+# Get a per-plant baseline (use first observation; or Time_Period == 1 if guaranteed)
+baseline_R <- rhma_dat %>%
+  arrange(Prop_ID, Time_Period) %>%
+  group_by(Prop_ID) %>%
+  filter(!is.na(PS_gap)) %>%
+  slice(1) %>%                      # earliest non-missing
+  transmute(Prop_ID, PS0 = PS_gap) %>%
+  ungroup()
+
+dat_comp_R <- rhma_dat %>%
+  left_join(baseline_R, by = "Prop_ID") %>%
+  mutate(
+    compaction_cm = PS_gap - PS0  # negative = more settlement vs baseline
+  )
+
+
+#QAQC
+# Should be near zero at baseline by construction
+dat_comp_R %>% filter(Time_Period == min(Time_Period)) %>%
+  summarise(mean0 = mean(compaction_cm, na.rm = TRUE))
+
+# PS_gap should generally increase over time (settlement) for many treatments
+rhma_dat %>%
+  group_by(Treatment_Name, Time_Period) %>%
+  summarise(mean_PS = mean(PS_gap, na.rm = TRUE), .groups = "drop") %>%
+  arrange(Treatment_Name, Time_Period) %>%
+  print(n = 20)
+
+
+# Summary over time by treatment for RHMA
+compaction_summary_R <- dat_comp_R %>%
+  filter(!is.na(compaction_cm)) %>%
+  group_by(Treatment_Name, Time_Period) %>%
+  summarise(
+    n = n(),
+    mean_compaction = mean(compaction_cm),
+    se_compaction = if (n() > 1) sd(compaction_cm)/sqrt(n()) else NA_real_,
+    .groups = "drop"
+  )
+
+# Final month (6)
+final_compaction_R <- compaction_summary_R %>% filter(Time_Period == 6)
+
+compaction_rate_R <- compaction_summary_R %>%
+  group_by(Treatment_Name) %>%
+  summarise(
+    total_compaction = max(mean_compaction, na.rm = TRUE),
+    rate_cm_per_month = total_compaction / 6
+  )
+
+ggplot(compaction_summary_R, aes(x = Time_Period, y = mean_compaction,
+                               color = Treatment_Name, group = Treatment_Name)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_compaction - se_compaction,
+                    ymax = mean_compaction + se_compaction),
+                width = 0.15) +
+  labs(
+    x = "Monitoring Month",
+    y = "Mean Compaction (cm)",
+    color = "Treatment"
+    # title = "Substrate Compaction Over Time by Treatment and Species"
+  ) +
+  theme_minimal()
+
+
+# Optional: rate (cm/month) from baseline to month 6
+rate_by_treat_R <- compaction_summary_R %>%
+  filter(Time_Period == 6) %>%
+  transmute(Treatment_Name,
+            rate_cm_per_month = mean_compaction / 6)
+rate_by_treat_R
+
+
+#Code to add compaction letters to this plot
+library(dplyr)
+library(rstatix)
+library(multcompView)
+library(ggplot2)
+
+# dat_comp_R must be individual-level data:
+# columns: Prop_ID, Time_Period, Treatment_Name, compaction_cm
+
+# helper: convert pairwise Dunn p-values to letters
+pairs_to_letters <- function(pairs, alpha = 0.05){
+  lvls <- sort(unique(c(pairs$group1, pairs$group2)))
+  M <- matrix(1, nrow = length(lvls), ncol = length(lvls),
+              dimnames = list(lvls, lvls))
+  for (i in seq_len(nrow(pairs))) {
+    g1 <- pairs$group1[i]; g2 <- pairs$group2[i]
+    p  <- pairs$p.adj[i];  if (is.na(p)) p <- 1
+    M[g1, g2] <- p; M[g2, g1] <- p
+  }
+  # TRUE where significantly different
+  sigMat <- M < alpha
+  out <- multcompView::multcompLetters(sigMat)
+  tibble(Treatment_Name = names(out$Letters),
+         Letters = unname(out$Letters))
+}
+
+# helper: stars for p-values
+p_stars <- function(p) dplyr::case_when(
+  is.na(p)      ~ NA_character_,
+  p <= 0.001    ~ "***",
+  p <= 0.01     ~ "**",
+  p <= 0.05     ~ "*",
+  p <= 0.10     ~ ".",
+  TRUE          ~ "ns"
+)
+
+# keep only usable data; drop tiny groups for stability
+kw_results_R <- dat_comp_R %>%
+  filter(!is.na(compaction_cm), !is.na(Treatment_Name), !is.na(Time_Period)) %>%
+  group_by(Time_Period) %>%
+  group_modify(~{
+    df <- .x %>% group_by(Treatment_Name) %>% filter(n() >= 2) %>% ungroup()
+    if (n_distinct(df$Treatment_Name) < 2 || n_distinct(df$compaction_cm) < 2) {
+      tibble(
+        n_groups = n_distinct(df$Treatment_Name),
+        n_total  = nrow(df),
+        statistic = NA_real_, df = NA_integer_, p = NA_real_,
+        p_signif = NA_character_, effsize = NA_real_,
+        eff_low  = NA_real_, eff_high = NA_real_,
+        note = "Too few groups or no variation"
+      )
+    } else {
+      kw  <- rstatix::kruskal_test(df, compaction_cm ~ Treatment_Name)
+      eff <- rstatix::kruskal_effsize(df, compaction_cm ~ Treatment_Name, ci = TRUE)
+      tibble(
+        n_groups = n_distinct(df$Treatment_Name),
+        n_total  = nrow(df),
+        statistic = kw$statistic, df = kw$df, p = kw$p,
+        p_signif = p_stars(kw$p),
+        effsize  = eff$effsize,        # epsilon^2
+        eff_low  = eff$conf.low,       # 95% CI
+        eff_high = eff$conf.high,
+        note = NA_character_
+      )
+    }
+  }) %>%
+  ungroup() %>%
+  mutate(p_fmt = rstatix::p_format(p)) %>%
+  arrange(Time_Period)
+
+kw_results_R
+
+library(dplyr)
+
+kw_table_R <- kw_results_R %>%
+  mutate(
+    `95% CI [ε²]` = sprintf("[%.2f, %.2f]", eff_low, eff_high)
+  ) %>%
+  transmute(
+    Month = Time_Period,
+    `Treatments (k)` = n_groups,
+    `Plants (N)` = n_total,
+    `KW χ²` = round(statistic, 2),
+    df = df,
+    p = p_fmt,                 # from rstatix::p_format
+    `ε²` = round(effsize, 2),
+    `95% CI [ε²]`,
+    Notes = note
+  )
+
+# knitr::kable(kw_table_R, caption = "Kruskal–Wallis tests of compaction by month (RHMA).")
+
+
+# 1) Letters per Time_Period with safe fallbacks
+letters_by_month <- dat_comp_R %>%
+  filter(!is.na(compaction_cm), !is.na(Treatment_Name), !is.na(Time_Period)) %>%
+  group_by(Time_Period) %>%
+  group_modify(~{
+    df <- .x
+    # need at least 2 treatments and at least 2 distinct values overall
+    if (n_distinct(df$Treatment_Name) < 2 || n_distinct(df$compaction_cm) < 2) {
+      return(tibble(Treatment_Name = unique(df$Treatment_Name), Letters = "a"))
+    }
+    kw <- suppressWarnings(rstatix::kruskal_test(df, compaction_cm ~ Treatment_Name))
+    if (is.na(kw$p) || kw$p >= 0.05) {
+      # no overall difference: give everyone "a"
+      return(tibble(Treatment_Name = unique(df$Treatment_Name), Letters = "a"))
+    }
+    # post-hoc Dunn with Holm correction
+    dunn <- rstatix::dunn_test(df, compaction_cm ~ Treatment_Name,
+                               p.adjust.method = "holm") %>%
+      mutate(p.adj = ifelse(is.na(p.adj), 1, p.adj))
+    pairs_to_letters(dunn, alpha = 0.05)
+  }) %>%
+  ungroup()
+
+# 2) Join letters to your summary
+annot <- compaction_summary_R %>%
+  left_join(letters_by_month, by = c("Time_Period","Treatment_Name")) %>%
+  mutate(Letters = if_else(is.na(Letters) | n < 2, "", Letters))
+
+# 3) Plot with letters above error bars
+yrange <- diff(range(compaction_summary_R$mean_compaction +
+                         dplyr::coalesce(compaction_summary_R$se_compaction, 0), na.rm = TRUE))
+if (!is.finite(yrange) || yrange == 0) yrange <- 1
+bump <- 0.05 * yrange
+
+p<- ggplot(compaction_summary_R,
+       aes(x = Time_Period, y = mean_compaction,
+           color = Treatment_Name, group = Treatment_Name)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_compaction - se_compaction,
+                    ymax = mean_compaction + se_compaction),
+                width = 0.15) +
+  geom_text(data = annot,
+            aes(y = mean_compaction + se_compaction + bump, label = Letters),
+            vjust = 0, fontface = "bold", size = 3, show.legend = FALSE) +
+  labs(title= "RHMA", x = "Monitoring Month", y = "Mean Compaction (cm)", color = "Treatment") +
+  theme_minimal() +
+  coord_cartesian(clip = "off") +
+  expand_limits(y = max(annot$mean_compaction + annot$se_compaction + bump, na.rm = TRUE) + 0.02*yrange)+
+  scale_x_continuous(breaks = sort(unique(compaction_summary_R$Time_Period))) +
+  scale_y_continuous(limits = c(0, 14), breaks = seq(0, 14, by = 2)) 
+p
+```
+
+
+```{r echo=FALSE}
+# ---- Packages ---------------------------------------------------------------
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(car)          # Levene test
+library(agricolae)    # HSD.test (Tukey letters)
+library(rstatix)      # dunn_test
+library(multcompView) # multcompLetters
+
+alpha <- 0.05
+
+# ---- Helper: letters from Dunn (Holm) after KW ------------------------------
+letters_from_dunn <- function(pairs, alpha = 0.05) {
+  trts <- sort(unique(c(pairs$group1, pairs$group2)))
+  M <- matrix(TRUE, length(trts), length(trts), dimnames = list(trts, trts))
+  # Mark pairs that ARE significantly different as FALSE (no shared letter)
+  pairs %>%
+    mutate(sig = p.adj <= alpha) %>%
+    rowwise() %>%
+    do({
+      g1 <- .$group1; g2 <- .$group2; sig <- .$sig
+      if (isTRUE(sig)) {
+        M[g1, g2] <<- FALSE
+        M[g2, g1] <<- FALSE
+      }
+      data.frame()
+    })
+  tibble(Treatment_Name = names(multcompView::multcompLetters(M)$Letters),
+         Letters = multcompView::multcompLetters(M)$Letters)
+}
+
+# ---- Function: month-6 test + letters for one species -----------------------
+letters_month6_for_species <- function(dat_comp, alpha = 0.05) {
+  df6 <- dat_comp %>%
+    filter(Time_Period == 6, !is.na(compaction_cm))
+
+  # summary (keep all groups for reporting)
+  sum6 <- df6 %>%
+    group_by(Treatment_Name) %>%
+    summarise(n = n(),
+              mean_compaction = mean(compaction_cm),
+              se_compaction   = if (n() > 1) sd(compaction_cm)/sqrt(n()) else NA_real_,
+              .groups = "drop")
+
+  # For INFERENCE only, drop tiny groups (n < 2)
+  infer <- df6 %>%
+    group_by(Treatment_Name) %>% filter(n() >= 2) %>% ungroup()
+
+  # Choose test
+  # Try ANOVA assumptions on inference subset
+  use_anova <- FALSE
+  if (n_distinct(infer$Treatment_Name) >= 2) {
+    aov_fit <- aov(compaction_cm ~ Treatment_Name, data = infer)
+    shp_ok  <- tryCatch(shapiro.test(residuals(aov_fit))$p.value > alpha, error = function(e) FALSE)
+    lev_ok  <- tryCatch(car::leveneTest(compaction_cm ~ Treatment_Name, data = infer)[1, "Pr(>F)"] > alpha,
+                        error = function(e) FALSE)
+    use_anova <- isTRUE(shp_ok) && isTRUE(lev_ok)
+  }
+
+  if (isTRUE(use_anova)) {
+    # One-way ANOVA + Tukey (agricolae gives letters directly)
+    hsd <- agricolae::HSD.test(aov_fit, "Treatment_Name", group = TRUE)
+    lets <- tibble(Treatment_Name = rownames(hsd$groups),
+                   Letters = hsd$groups$groups)
+    test_info <- tibble(method = "ANOVA + Tukey HSD",
+                        shapiro_p = tryCatch(shapiro.test(residuals(aov_fit))$p.value, error = function(e) NA_real_),
+                        levene_p  = tryCatch(car::leveneTest(compaction_cm ~ Treatment_Name, data = infer)[1, "Pr(>F)"], error = function(e) NA_real_),
+                        anova_p   = summary(aov_fit)[[1]][["Pr(>F)"]][1])
+  } else {
+    # Kruskal–Wallis + Dunn (Holm) + letters from pairwise p-values
+    kw <- rstatix::kruskal_test(infer, compaction_cm ~ Treatment_Name)
+    dunn <- rstatix::dunn_test(infer, compaction_cm ~ Treatment_Name, p.adjust.method = "holm")
+    lets <- letters_from_dunn(dunn, alpha = alpha)
+    test_info <- tibble(method = "Kruskal–Wallis + Dunn (Holm)",
+                        kw_p = kw$p)
+  }
+
+  # Merge letters with full summary (n<2 will have NA letters)
+  out <- sum6 %>%
+    left_join(lets, by = "Treatment_Name") %>%
+    arrange(Treatment_Name)
+
+  list(summary_table = out, test_info = test_info)
+}
+
+# ---- Run for RHMA species ---------------------------------------------------
+R_out <- letters_month6_for_species(dat_comp_R, alpha = alpha)
+
+R_table <- R_out$summary_table
+R_test  <- R_out$test_info
+
+R_table
+R_test
+
+# ---- Plot: month-6 compaction with letters (one panel per species) ----------
+plot_m6 <- function(tab, species_label) {
+  dodge <- position_dodge(width = 0.6)
+  ggplot(tab, aes(x = Treatment_Name, y = mean_compaction)) +
+    geom_pointrange(aes(ymin = mean_compaction - se_compaction,
+                        ymax = mean_compaction + se_compaction),
+                    position = dodge, size = 0.6) +
+    geom_text(aes(y = mean_compaction - ifelse(mean_compaction >= 0, 1.05*abs(se_compaction), 1.05*abs(se_compaction)) - 0.3,
+                  label = Letters),
+              vjust = 1, size = 5, fontface = "bold", na.rm = TRUE) +
+    labs(x = "Treatment", y = "Compaction at Month 6 (cm)",
+         title = species_label) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1))
+}
+
+p_R <- plot_m6(R_table, "R. mangle — Month 6 Compaction")
+
+p_R
+```
+
+I want to group the 2 plots with significance letters together
+```{r}
+library(cowplot)
+
+y_top <- max(
+  layer_scales(g)$y$range$range,
+  layer_scales(p)$y$range$range
+)
+g <- g + scale_y_continuous(limits = c(0, y_top))
+p <- p + scale_y_continuous(limits = c(0, y_top))
+
+x_top <- max(
+  layer_scales(g)$x$range$range,
+  layer_scales(p)$x$range$range
+)
+g <- g + scale_x_continuous(limits = c(0, x_top))
+p <- p + scale_x_continuous(limits = c(0, x_top))
+
+
+# Extract legend from one plot
+leg <- cowplot::get_legend(g + theme(legend.position = "bottom"))
+# xaxis <- cowplot::plot_grid(theme(axis.text.x = "bottom")) # I was trying to get just one x axis label
+
+# Remove legends from the panels, align them, add A/B labels
+prow <- cowplot::plot_grid(
+  g + theme(legend.position = "none"),
+  p + theme(legend.position = "none"),
+  labels = c("A", "B"),
+  ncol = 2, align = "hv", axis = "tb"
+)
+
+# Stack panels over the shared legend
+final_plot <- cowplot::plot_grid(
+  prow, leg, ncol = 1, rel_heights = c(1, 0.08)
+)
+
+final_plot
+
+
+```
+
+
