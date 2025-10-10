@@ -27,19 +27,19 @@ okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2",
 # Define shapes for each Treatment_Name
 shape_vals <- c(
   "Soil"                = 0,  # open square
-  "Crushed glass"       = 17, # filled triangle
+  "Glass"               = 17, # filled triangle
   "25% SG"              = 18, # filled diamond
   "75% SG"              = 8,  # asterisk
-  "100% Sargassum (SG)" = 15  # filled square
+  "100% SG"             = 15  # filled square
 )
 
 # Define colors using okabe_ito palette
 color_vals <- c(
   "Soil"                = okabe_ito[1], # green  (#009E73)
-  "Crushed glass"       = okabe_ito[6], # blue   (#0072B2)
+  "Glass"               = okabe_ito[6], # blue   (#0072B2)
   "25% SG"              = okabe_ito[3], # orange (#E69F00)
   "75% SG"              = okabe_ito[2], # vermillion (#D55E00)
-  "100% Sargassum (SG)" = okabe_ito[7]  # purple (#CC79A7)
+  "100% SG"             = okabe_ito[7]  # purple (#CC79A7)
 )
 ```
 
@@ -50,7 +50,7 @@ This analysis examines the predation patterns of red (*Rhizophora mangle*, RHMA)
 ## Treatments
 
 1. **Soil**: Traditional potting soil (control)
-2. **Crushed glass**: 100% crushed glass substrate
+2. **Glass**: 100% crushed glass substrate
 3. **25% SG**: 3:1 ratio of crushed glass to *Sargassum*
 4. **75% SG**: 1:3 ratio of crushed glass to *Sargassum*
 5. **100% Sargassum (SG)**: Pure *Sargassum* substrate
@@ -64,15 +64,15 @@ ALLDATA <- ALLDATA %>%
   mutate(
     Treatment_Name = case_when(
       Treatment == "A" ~ "Soil",
-      Treatment == "B" ~ "Crushed glass",
-      Treatment == "C" ~ "100% Sargassum (SG)",
+      Treatment == "B" ~ "Glass",
+      Treatment == "C" ~ "100% SG",
       Treatment == "D" ~ "25% SG",
       Treatment == "E" ~ "75% SG",
       TRUE ~ as.character(Treatment)
     ),
     Treatment_Name = factor(
       Treatment_Name,
-      levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")
+      levels = c("Soil", "Glass", "25% SG", "75% SG", "100% SG")
     )
   )
 
@@ -80,17 +80,17 @@ ALLDATA <- ALLDATA %>%
 ALLDATA <- ALLDATA %>%
   mutate(
     Sarg_present = if_else(
-      Treatment_Name %in% c("75% SG", "25% SG", "100% Sargassum (SG)"),
+      Treatment_Name %in% c("75% SG", "25% SG", "100% SG"),
       1L, 0L
     ),
     Sarg_group = factor(if_else(Sarg_present == 1L, "With Sargassum", "No Sargassum"),
                         levels = c("No Sargassum","With Sargassum")),
     SG_pct = case_when(
       Treatment_Name == "Soil" ~ 0,
-      Treatment_Name == "Crushed glass" ~ 0,
+      Treatment_Name == "Glass" ~ 0,
       Treatment_Name == "25% SG" ~ 25,
       Treatment_Name == "75% SG" ~ 75,
-      Treatment_Name == "100% Sargassum (SG)"~ 100,
+      Treatment_Name == "100% SG"~ 100,
       TRUE ~ NA_real_
     )
   )
@@ -168,7 +168,7 @@ ALLDATA_pred <- ALLDATA_clean %>%
 
 ```{r}
 pred_summary <- ALLDATA_pred %>%
-  group_by(Species, Treatment_Name, Time_Period) %>%
+  group_by(Species, Treatment_Name, Time_Period, Site) %>%
   summarise(
     n = n(),
     n_pred = sum(pred_any == 1, na.rm = TRUE),
@@ -282,6 +282,69 @@ ggplot(emm_df,
     legend.box = "vertical",
     panel.grid.minor = element_blank()
   )
+
 ```
 
+```{r}
+library(emmeans)
+library(dplyr)
+library(ggplot2)
+library(multcomp)    # for cld method dispatch
+library(multcompView)
+
+# 1) EMMs on response scale (you already have this)
+emm_trt_by_sp <- emmeans(fit, ~ Treatment_Name | Species, type = "response")
+
+# 2) Compact letter display per species (Holm-adjusted)
+cld_df <- cld(emm_trt_by_sp, by = "Species", adjust = "holm", Letters = letters) %>%
+  as.data.frame() %>%
+  rename(prob = prob, lwr = asymp.LCL, upr = asymp.UCL) %>%
+  mutate(
+    # tidy letter column
+    letters = .group %>% trimws() %>% gsub("\\s+", "", .),
+    Treatment_Name = factor(Treatment_Name, levels = names(color_vals))
+  )
+
+
+# (Optional) drop letters for tiny-N groups if you want (e.g., n < 3)
+# supply a counts table with Species x Treatment_Name
+counts_tbl <- ALLDATA_pred %>%
+  group_by(Species, Treatment_Name) %>%
+  summarize(n = sum(!is.na(pred_any)), .groups = "drop")
+
+cld_df <- cld_df %>%
+  left_join(counts_tbl, by = c("Species","Treatment_Name")) %>%
+  mutate(letters = ifelse(n < 3, "", letters))
+
+# After running cld()
+cld_df <- cld_df %>%
+  mutate(Treatment_Name = factor(Treatment_Name, levels = names(color_vals))) %>%
+  arrange(Species, Treatment_Name)
+
+
+# 3) Plot with letters (build on your ggplot code)
+p_pred <- ggplot(cld_df,
+  aes(x = Treatment_Name, y = prob, color = Treatment_Name, shape = Treatment_Name)) +
+  geom_errorbar(aes(ymin = lwr, ymax = upr), width = 0.2, alpha = 0.8) +
+  geom_point(size = 2.6) +
+  geom_text(aes(label = letters, y = upr * 1.15),    # nudge above CI
+            show.legend = FALSE, fontface = "bold", size = 4.5) +
+  facet_wrap(~ Species, nrow = 1) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  scale_color_manual(values = color_vals, name = "Treatment") +
+  scale_shape_manual(values = shape_vals,  name = "Treatment") +
+  labs(title = "Predation probability by treatment (EMMeans ±95% CI)",
+       x = NULL, y = "Predation probability") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom", legend.box = "vertical",
+        panel.grid.minor = element_blank())
+
+p_pred
+
+# Reuse the same limits as your original plot
+p_pred + coord_cartesian(ylim = c(0, 0.15))  # or your chosen range
+
+
+```
 
