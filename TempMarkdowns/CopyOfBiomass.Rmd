@@ -21,10 +21,10 @@ library(patchwork)
 okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7", "#999999")
 color_vals <- c(
   "Soil"                = okabe_ito[1],
-  "Crushed glass"       = okabe_ito[6],
+  "Glass"               = okabe_ito[6],
   "25% SG"              = okabe_ito[3],
   "75% SG"              = okabe_ito[2],
-  "100% Sargassum (SG)" = okabe_ito[7]
+  "100% SG"             = okabe_ito[7]
 )
 
 # ============================================================
@@ -75,8 +75,8 @@ processed_raw <- processed_raw %>%
   dplyr::mutate(
     treatment = dplyr::case_when(
       treatment == "A" ~ "Soil",
-      treatment == "B" ~ "Crushed glass",
-      treatment == "C" ~ "100% Sargassum (SG)",
+      treatment == "B" ~ "Glass",
+      treatment == "C" ~ "100% SG",
       treatment == "D" ~ "25% SG",
       treatment == "E" ~ "75% SG",
       TRUE ~ treatment
@@ -106,7 +106,7 @@ process_biomass_data <- function(data) {
     dplyr::mutate(
       treatment = factor(
         treatment,
-        levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")
+        levels = c("Soil", "Glass", "25% SG", "75% SG", "100% SG")
       ),
       species = factor(species, levels = c("LARA", "RHMA"))
     )
@@ -191,6 +191,12 @@ rhma_below_stats <- perform_statistical_tests(processed_data, "below_ground",  "
 lara_below_stats <- perform_statistical_tests(processed_data, "below_ground",  "LARA")
 rhma_total_stats <- perform_statistical_tests(processed_data, "total_biomass", "RHMA")
 lara_total_stats <- perform_statistical_tests(processed_data, "total_biomass", "LARA")
+
+rhma_rs_stats <- perform_statistical_tests(processed_data, "root_shoot_ratio", "RHMA")
+lara_rs_stats <- perform_statistical_tests(processed_data, "root_shoot_ratio", "LARA")
+
+calculate_cohens_d(processed_data, "Soil", "Glass", "above_ground", "LARA")
+
 
 # ============================================================
 # 6) Compact Letter Displays (CLDs) for Letters on Plots
@@ -356,11 +362,11 @@ create_stacked_biomass_chart <- function(data, species_filter, title,
 
 # Build plots
 lara_plot <- create_stacked_biomass_chart(
-  chart_data, "LARA", "White Mangrove (Laguncularia racemosa)",
+  chart_data, "LARA", "White Mangrove (L. racemosa)",
   summary_stats, all_sig_letters
 )
 rhma_plot <- create_stacked_biomass_chart(
-  chart_data, "RHMA", "Red Mangrove (Rhizophora mangle)",
+  chart_data, "RHMA", "Red Mangrove (R. mangle)",
   summary_stats, all_sig_letters
 )
 
@@ -451,7 +457,7 @@ cat("4) Note data quality limits in Methods.\n\n")
 Build component-level summaries (true components, not approximations)
 ```{r}
 # ---- enforce the desired treatment order everywhere ----
-treat_levels <- c("Soil","Crushed glass","25% SG","75% SG","100% Sargassum (SG)")
+treat_levels <- c("Soil","Glass","25% SG","75% SG","100% SG")
 processed_data <- processed_data %>%
   dplyr::mutate(treatment = factor(as.character(treatment), levels = treat_levels))
 
@@ -656,9 +662,9 @@ component_stack_plot <- function(df, species_filter, title = NULL) {
 
 # Examples
 rhma_comp <- component_stack_plot(plot_df, "RHMA",
-  "Red Mangrove (Rhizophora mangle)")
+  "Red Mangrove (R. mangle)")
 lara_comp <- component_stack_plot(plot_df %>% dplyr::filter(!(species=="LARA" & component_f=="Hypocotyl")),
-  "LARA", "White Mangrove (Laguncularia racemosa)")
+  "LARA", "White Mangrove (L. racemosa)")
 
 print(rhma_comp); print(lara_comp)
 # gridExtra::grid.arrange(lara_comp, rhma_comp, ncol = 1)
@@ -779,13 +785,13 @@ create_publication_biomass_chart <- function(data, species_filter, title, summar
 # Create publication-ready plots
 lara_pub_plot <- create_publication_biomass_chart(
   chart_data, "LARA", 
-  expression(paste("White Mangrove (", italic("Laguncularia racemosa"), ")")),
+  expression(paste("White Mangrove (", italic("L. racemosa"), ")")),
   summary_stats, all_sig_letters
 )
 
 rhma_pub_plot <- create_publication_biomass_chart(
   chart_data, "RHMA", 
-  expression(paste("Red Mangrove (", italic("Rhizophora mangle"), ")")),
+  expression(paste("Red Mangrove (", italic("R, mangle"), ")")),
   summary_stats, all_sig_letters
 )
 
@@ -827,7 +833,222 @@ ggsave("Figure_1_combined_mangroves.pdf", combined_pub_plot,
        width = 7, height = 10, device = cairo_pdf)
 ```
 
+```{r}
+# ============================================================
+# 11) Root:Shoot tests + Auto Summary Table for H0/H1 decisions
+# ============================================================
 
+# --- Run root:shoot ANOVAs by species
+rhma_rs_stats <- perform_statistical_tests(processed_data, "root_shoot_ratio", "RHMA")
+lara_rs_stats <- perform_statistical_tests(processed_data, "root_shoot_ratio", "LARA")
+
+# --- Helpers -------------------------------------------------
+get_anova_p <- function(stat_obj) {
+  if (is.null(stat_obj) || is.null(stat_obj$anova)) return(NA_real_)
+  sm <- summary(stat_obj$anova)[[1]]
+  sm["treatment","Pr(>F)"]
+}
+
+get_cld_string <- function(stat_obj) {
+  if (is.null(stat_obj) || is.null(stat_obj$tukey) || is.null(stat_obj$tukey$groups)) return(NA_character_)
+  g <- stat_obj$tukey$groups |> as.data.frame() |> tibble::rownames_to_column("treatment")
+  g <- dplyr::arrange(g, treatment)
+  paste0(g$treatment, "=", stringr::str_trim(g$groups)) |> paste(collapse = "; ")
+}
+
+get_means <- function(df, species, response) {
+  df |> 
+    dplyr::filter(species == species) |>
+    dplyr::group_by(treatment) |>
+    dplyr::summarise(mean = mean(.data[[response]], na.rm = TRUE), .groups = "drop")
+}
+
+order_string <- function(means_df, decreasing = TRUE) {
+  means_df |>
+    dplyr::arrange(dplyr::across(mean, ~ if (decreasing) dplyr::desc(.x) else .x)) |>
+    dplyr::pull(treatment) |>
+    paste(collapse = " > ")
+}
+
+# fuzzy compare helper (ties allowed within small tolerance)
+is_monotone <- function(values, decreasing = TRUE, tol = 1e-8) {
+  if (decreasing) all(diff(values) <= tol) else all(diff(values) >= -tol)
+}
+
+# --- Hypothesis evaluation logic (by species + response) -----
+evaluate_set <- function(species_code, response) {
+  # pick the right stat object
+  stat_obj <- switch(paste(species_code, response),
+    "RHMA above_ground"     = rhma_above_stats,
+    "LARA above_ground"     = lara_above_stats,
+    "RHMA below_ground"     = rhma_below_stats,
+    "LARA below_ground"     = lara_below_stats,
+    "RHMA total_biomass"    = rhma_total_stats,
+    "LARA total_biomass"    = lara_total_stats,
+    "RHMA root_shoot_ratio" = rhma_rs_stats,
+    "LARA root_shoot_ratio" = lara_rs_stats
+  )
+  p <- get_anova_p(stat_obj)
+  cld <- get_cld_string(stat_obj)
+  means <- get_means(processed_data, species_code, response)
+  ord  <- order_string(means, decreasing = TRUE)
+
+  # expected patterns per hypothesis
+  # Treatments present in your data:
+  T_SOIL <- "Soil"; T_GLASS <- "Glass"; T25 <- "25% SG"; T75 <- "75% SG"; T100 <- "100% SG"
+
+  # base decisions
+  null_label <- dplyr::case_when(
+    response %in% c("above_ground","total_biomass") ~ "Null 1",
+    response == "below_ground" ~ "Null 2",
+    response == "root_shoot_ratio" ~ "Null 3",
+    TRUE ~ "Null ?"
+  )
+  null_decision <- ifelse(!is.na(p) && p < 0.05, "Reject (differences among treatments)", "Fail to reject")
+
+  # alternate logic (species specific where needed)
+  alt_label <- dplyr::case_when(
+    response %in% c("above_ground","total_biomass") & species_code == "RHMA" ~ "Alt 1a",
+    response %in% c("above_ground","total_biomass") & species_code == "LARA" ~ "Alt 1b",
+    response == "below_ground" & species_code == "RHMA" ~ "Alt 2a",
+    response == "below_ground" & species_code == "LARA" ~ "Alt 2b",
+    response == "root_shoot_ratio" & species_code == "RHMA" ~ "Alt 3a",
+    response == "root_shoot_ratio" & species_code == "LARA" ~ "Alt 3b",
+    TRUE ~ "Alt ?"
+  )
+
+  alt_supported <- NA
+  alt_reason    <- NA_character_
+
+  if (!is.na(p) && p < 0.05) {
+    # Only check alternates if there *are* differences
+    m <- means |> tidyr::pivot_wider(names_from = treatment, values_from = mean)
+
+    if (response %in% c("above_ground","total_biomass")) {
+      # Expected order: Soil > 25% SG > 75% SG > 100% SG > Glass
+      have <- c(T_SOIL,T25,T75,T100,T_GLASS) %in% names(m)
+      if (all(have)) {
+        v <- unlist(m[c(T_SOIL,T25,T75,T100,T_GLASS)], use.names = FALSE)
+        cond <- is_monotone(v, decreasing = TRUE)
+        alt_supported <- cond
+        alt_reason <- if (cond) "Order matches Soil > 25% SG > 75% SG > 100% SG > Glass."
+                       else paste("Observed order:", ord)
+      } else {
+        alt_reason <- "Some treatments missing; cannot fully verify expected order."
+      }
+    } else if (response == "below_ground") {
+      # Expected order (low→high): Glass < 25% SG < 75% SG < Soil < 100% SG
+      have <- c(T_GLASS,T25,T75,T_SOIL,T100) %in% names(m)
+      if (all(have)) {
+        v <- unlist(m[c(T_GLASS,T25,T75,T_SOIL,T100)], use.names = FALSE)
+        cond <- is_monotone(v, decreasing = FALSE)
+        alt_supported <- cond
+        alt_reason <- if (cond) "Order matches Glass < 25% SG < 75% SG < Soil < 100% SG."
+                       else paste("Observed order:", order_string(means, decreasing = FALSE))
+      } else {
+        alt_reason <- "Some treatments missing; cannot fully verify expected order."
+      }
+    } else if (response == "root_shoot_ratio") {
+      # Expected: 75% SG has the lowest root:shoot ratio vs 25% SG and Glass
+      have <- c(T75,T25,T_GLASS) %in% names(m)
+      if (all(have)) {
+        cond <- (m[[T75]] <= min(m[[T25]], m[[T_GLASS]], na.rm = TRUE))
+        alt_supported <- cond
+        alt_reason <- if (cond) "75% SG has the lowest mean ratio."
+                       else paste("Means:", paste0(names(m), "=", round(unlist(m),3), collapse=", "))
+      } else {
+        alt_reason <- "One or more of 25% SG / 75% SG / Glass missing for ratio check."
+      }
+    }
+  } else {
+    alt_supported <- NA
+    alt_reason <- "No significant differences; cannot support ordered alternate."
+  }
+
+  tibble::tibble(
+    species = species_code,
+    response = response,
+    anova_p = p,
+    significant = ifelse(!is.na(p) & p < 0.05, "Yes", "No"),
+    tukey_letters = cld,
+    mean_order_desc = ord,
+    null_test = null_label,
+    null_decision = null_decision,
+    alternate = alt_label,
+    alternate_supported = dplyr::case_when(
+      is.na(alt_supported) ~ "N/A",
+      alt_supported ~ "Yes",
+      TRUE ~ "No"
+    ),
+    rationale = alt_reason
+  )
+}
+
+summary_table <- dplyr::bind_rows(
+  evaluate_set("RHMA","above_ground"),
+  evaluate_set("LARA","above_ground"),
+  evaluate_set("RHMA","below_ground"),
+  evaluate_set("LARA","below_ground"),
+  evaluate_set("RHMA","root_shoot_ratio"),
+  evaluate_set("LARA","root_shoot_ratio")
+)
+
+# Nice rendering
+summary_table_print <- summary_table |>
+  dplyr::mutate(
+    anova_p = ifelse(is.na(anova_p), NA, signif(anova_p, 3)),
+    response = dplyr::recode(response,
+      above_ground = "Above-ground biomass",
+      below_ground = "Below-ground biomass",
+      root_shoot_ratio = "Root:shoot ratio",
+      total_biomass = "Total biomass"
+    )
+  ) |>
+  dplyr::select(
+    species, response, anova_p, significant, tukey_letters,
+    mean_order_desc, null_test, null_decision, alternate,
+    alternate_supported, rationale
+  )
+
+knitr::kable(summary_table_print, caption = "Hypothesis Summary by Species & Response")
+
+```
+
+```{r}
+# Add once if not installed:
+# install.packages("rstatix")
+
+library(rstatix)
+library(dplyr)
+
+# 1) Nonparametric confirm for root:shoot
+kw_rs_rhma <- kruskal_test(processed_data %>% filter(species=="RHMA"), 
+                           root_shoot_ratio ~ treatment)
+kw_rs_lara <- kruskal_test(processed_data %>% filter(species=="LARA"), 
+                           root_shoot_ratio ~ treatment)
+
+dunn_rs_rhma <- dunn_test(processed_data %>% filter(species=="RHMA"),
+                          root_shoot_ratio ~ treatment, p.adjust.method="holm")
+dunn_rs_lara <- dunn_test(processed_data %>% filter(species=="LARA"),
+                          root_shoot_ratio ~ treatment, p.adjust.method="holm")
+
+kw_rs_rhma; kw_rs_lara
+dunn_rs_rhma %>% arrange(p.adj) %>% print(n=Inf)
+dunn_rs_lara %>% arrange(p.adj) %>% print(n=Inf)
+
+# 2) Median table (guards against small-n instability)
+median_table <- processed_data %>%
+  group_by(species, treatment) %>%
+  summarise(
+    n = n(),
+    med_above = median(above_ground, na.rm=TRUE),
+    med_below = median(below_ground, na.rm=TRUE),
+    med_rs    = median(root_shoot_ratio, na.rm=TRUE),
+    .groups = "drop"
+  )
+median_table
+
+```
 
 
 
@@ -896,8 +1117,8 @@ processed_raw <- processed_raw %>%
   dplyr::mutate(
     treatment = dplyr::case_when(
       treatment == "A" ~ "Soil",
-      treatment == "B" ~ "Crushed glass",
-      treatment == "C" ~ "100% Sargassum (SG)",
+      treatment == "B" ~ "Glass",
+      treatment == "C" ~ "100% SG",
       treatment == "D" ~ "25% SG",
       treatment == "E" ~ "75% SG",
       TRUE ~ treatment
@@ -930,7 +1151,7 @@ process_biomass_data <- function(data) {
     dplyr::mutate(
       treatment = factor(
         treatment,
-        levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")
+        levels = c("Soil", "Glass", "25% SG", "75% SG", "100% SG")
       ),
       species = factor(species, levels = c("LARA", "RHMA"))
     )
@@ -1113,7 +1334,7 @@ if (nrow(all_letters) > 0) {
   all_letters <- all_letters %>%
     separate(analysis_key, into = c("species", "variable"), sep = "_", extra = "merge") %>%
     mutate(
-      treatment = factor(treatment, levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% Sargassum (SG)")),
+      treatment = factor(treatment, levels = c("Soil", "Glass", "25% SG", "75% SG", "100% SG")),
       species = factor(species, levels = c("LARA", "RHMA"))
     ) %>%
     mutate(letter = str_trim(letter))
