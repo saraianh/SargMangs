@@ -1,0 +1,804 @@
+---
+title: "Mangrove Seedling Survivorship Analysis"
+author: "Sarai Hutchinson"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cerulean
+    code_folding: hide
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+Awesome — here’s a **concise, drop-in update** that (a) treats **Site** appropriately, (b) uses **replicate as the unit** for endpoint inference, and (c) avoids RHMA separation issues via **brglm2**. I kept your original structure/sections and trimmed redundant chunks.
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
+
+# Libraries
+library(tidyverse)
+library(ggplot2)
+library(survival)
+library(survminer)
+library(knitr)
+library(kableExtra)
+library(emmeans)
+library(car)
+library(broom)
+library(lme4)
+library(lmerTest)
+library(brglm2)   # bias-reduced GLMs (handles separation better than logistf for RHMA endpoint)
+library(logistf)
+library(multcompView)
+
+# Palettes/shapes
+okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7", "#999999")
+shape_vals <- c("Soil"=0,"Glass"=17,"25% SG"=18,"75% SG"=8,"100% SG"=15)
+color_vals <- c("Soil"=okabe_ito[1],"Glass"=okabe_ito[6],"25% SG"=okabe_ito[3],
+                "75% SG"=okabe_ito[2],"100% SG"=okabe_ito[7])
+```
+
+---
+
+# Data Import and Preparation
+
+```{r data-import}
+ALLDATA <- read_csv("C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/Hutchinson_MonitoringAndIntake_Sites.csv")
+
+ALLDATA <- ALLDATA %>%
+  mutate(
+    Treatment_Name = case_when(
+      Treatment == "A" ~ "Soil",
+      Treatment == "B" ~ "Glass",
+      Treatment == "C" ~ "100% SG",
+      Treatment == "D" ~ "25% SG",
+      Treatment == "E" ~ "75% SG",
+      TRUE ~ as.character(Treatment)
+    ) %>% factor(levels = c("Soil","Glass","25% SG","75% SG","100% SG")),
+    Sarg_present = if_else(Treatment_Name %in% c("75% SG","25% SG","100% SG"),1L,0L),
+    Sarg_group = factor(if_else(Sarg_present==1L,"With Sargassum","No Sargassum"),
+                        levels=c("No Sargassum","With Sargassum")),
+    SG_pct = case_when(
+      Treatment_Name == "Soil" ~ 0,
+      Treatment_Name == "Glass" ~ 0,
+      Treatment_Name == "25% SG" ~ 25,
+      Treatment_Name == "75% SG" ~ 75,
+      Treatment_Name == "100% SG" ~ 100,
+      TRUE ~ NA_real_
+    )
+  )
+
+ALLDATA_SurvBin <- ALLDATA %>%
+  mutate(
+    Surv_Bin    = ifelse(Survivorship %in% c("A","DY"), 1, 0),
+    Time_Period = factor(Time_Period, levels = c("0","1","2","3","4","5","6")),
+    Species     = factor(Species),
+    Site        = factor(Site)
+  )
+```
+
+---
+
+## Quality Control
+
+```{r qc-resurrections}
+qc_resurrections <- ALLDATA_SurvBin %>%
+  mutate(TP_num = as.integer(as.character(Time_Period))) %>%
+  arrange(Species, Prop_ID, TP_num) %>%
+  group_by(Species, Prop_ID) %>%
+  mutate(change = Surv_Bin - lag(Surv_Bin)) %>%
+  filter(change == 1 & lag(Surv_Bin) == 0) %>%
+  ungroup()
+
+flagged_ids <- qc_resurrections %>% distinct(Species, Prop_ID)
+
+cat("Number of plants with resurrection issues:", nrow(flagged_ids), "\n")
+
+ALLDATA_clean <- ALLDATA_SurvBin %>% anti_join(flagged_ids, by = c("Species","Prop_ID"))
+
+cat("Original observations:", nrow(ALLDATA_SurvBin))
+cat("\nClean observations:", nrow(ALLDATA_clean))
+cat("\nObservations removed:", nrow(ALLDATA_SurvBin) - nrow(ALLDATA_clean))
+```
+
+---
+
+## Helper: replicate-level data (all TPs + endpoint)
+
+```{r replicate-helper}
+rep_surv_all <- ALLDATA_clean %>%
+  group_by(Species, Site, Treatment_Name, Replicate, Time_Period) %>%
+  summarise(n_total = n(),
+            n_alive = sum(Surv_Bin == 1, na.rm = TRUE),
+            surv_pct = 100 * n_alive / n_total,
+            .groups = "drop") %>%
+  mutate(Time_num = as.numeric(as.character(Time_Period)),
+         Site = droplevels(factor(Site)),
+         Replicate = droplevels(factor(Replicate)))
+
+rep_surv_TP6 <- rep_surv_all %>%
+  filter(Time_num == max(Time_num, na.rm = TRUE)) %>%
+  droplevels()
+
+```
+
+```{r}
+library(dplyr)
+
+# Step 1. Survival per replicate (%)
+rep_surv <- ALLDATA_clean %>%
+  group_by(Species, Treatment_Name, Replicate, Time_Period) %>%
+  summarise(
+    n_total   = n(),
+    n_alive   = sum(Surv_Bin),
+    surv_rate = mean(Surv_Bin) * 100,   # replicate-level %
+    .groups = "drop"
+  )
+
+# Step 2. Treatment-level summary (mean ± SE across replicates)
+treat_surv <- rep_surv %>%
+  group_by(Species, Treatment_Name) %>%
+  summarise(
+    Total_Planted = sum(n_total),
+    Total_Survived = sum(n_alive),
+    Mean_Survival = mean(surv_rate),
+    SE = sd(surv_rate) / sqrt(n()),     # replicate-level SE
+    .groups = "drop"
+  ) %>%
+  arrange(Species, Treatment_Name)
+
+# View nicely
+treat_surv
+
+```
+
+
+```{r}
+# Use only final time point (TP6) for survivorship
+rep_surv_TP6 <- ALLDATA_clean %>%
+  filter(Time_Period == "6") %>%   # only the last monitoring period
+  group_by(Species, Site, Treatment_Name, Replicate) %>%
+  summarise(
+    n_total   = n(),                        # number planted in that replicate
+    n_alive   = sum(Surv_Bin),              # survivors at TP6
+    surv_rate = mean(Surv_Bin) * 100,       # replicate survival %
+    .groups   = "drop"
+  )
+
+# Now aggregate across replicates
+treat_surv <- rep_surv_TP6 %>%
+  group_by(Species, Treatment_Name) %>%
+  summarise(
+    Total_Planted  = sum(n_total),
+    Total_Survived = sum(n_alive),
+    Mean_Survival  = mean(surv_rate),
+    SE             = sd(surv_rate) / sqrt(n()),   # variation across replicates
+    .groups = "drop"
+  )
+
+treat_surv
+```
+
+
+---
+
+# Exploratory Data Analysis
+
+## Sample Size Overview
+
+```{r sample-size}
+initial_counts <- ALLDATA_clean %>%
+  filter(Time_Period == "0") %>%
+  group_by(Treatment_Name, Species) %>%
+  summarise(n_initial = n(), .groups="drop") %>%
+  pivot_wider(names_from = Species, values_from = n_initial, values_fill = 0)
+
+initial_counts %>% kable(caption = "Initial Sample Sizes by Treatment and Species") %>%
+  kable_styling(bootstrap_options = c("striped","hover"))
+
+site_dist <- ALLDATA_clean %>%
+  filter(Time_Period == "0") %>%
+  group_by(Site, Treatment_Name) %>%
+  summarise(n = n(), .groups="drop") %>%
+  pivot_wider(names_from = Treatment_Name, values_from = n, values_fill = 0)
+
+site_dist %>% kable(caption = "Distribution across Sites") %>%
+  kable_styling(bootstrap_options = c("striped","hover"))
+```
+
+## Survival Over Time (descriptive; replicate means)
+
+```{r survival-time-series}
+survival_by_time_reps <- ALLDATA_clean %>%
+  group_by(Species, Treatment_Name, Replicate, Time_Period) %>%
+  summarise(n_total = sum(!is.na(Surv_Bin)),
+            n_alive = sum(Surv_Bin==1, na.rm=TRUE),
+            surv_pct = 100*n_alive/n_total,
+            .groups="drop")
+
+survival_by_time_mean <- survival_by_time_reps %>%
+  group_by(Species, Treatment_Name, Time_Period) %>%
+  summarise(n_reps=dplyr::n(),
+            mean_surv = mean(surv_pct, na.rm=TRUE),
+            sd_surv   = sd(surv_pct, na.rm=TRUE),
+            se_surv   = sd_surv/sqrt(n_reps),
+            .groups="drop") %>%
+  arrange(Species, Treatment_Name, Time_Period)
+
+p_survival_curves2 <- ggplot() +
+  geom_ribbon(data=survival_by_time_mean,
+              aes(x=Time_Period, ymin=mean_surv-se_surv, ymax=mean_surv+se_surv,
+                  fill=Treatment_Name, group=Treatment_Name),
+              alpha=0.12, linetype=0) +
+  geom_line(data=survival_by_time_mean,
+            aes(x=Time_Period, y=mean_surv, color=Treatment_Name, group=Treatment_Name),
+            linewidth=1.2) +
+  geom_point(data=survival_by_time_mean,
+             aes(x=Time_Period, y=mean_surv, color=Treatment_Name, shape=Treatment_Name), size=3) +
+  facet_wrap(~ Species, labeller = labeller(Species=c("LARA"="L. racemosa","RHMA"="R. mangle"))) +
+  scale_y_continuous(limits=c(0,100), expand = expansion(mult=c(0.02,0.05))) +
+  scale_color_manual(values=color_vals, name="Treatment") +
+  scale_fill_manual(values=color_vals,  name="Treatment") +
+  scale_shape_manual(values=shape_vals, name="Treatment") +
+  labs(
+    # title="Survival (%) Over 6 Months — Mean of Replicates (±SE)",
+       x="Months", y="Mean Survival Rate (%)") +
+  theme_minimal(base_size=12) + 
+  theme(legend.position="bottom", legend.text=element_text(size=9))
+
+print(p_survival_curves2)
+```
+```{r}
+p_LARA <- ggplot(filter(survival_by_time_mean, Species=="LARA")) +
+  geom_ribbon(aes(x=Time_Period, ymin=mean_surv-se_surv, ymax=mean_surv+se_surv,
+                  fill=Treatment_Name, group=Treatment_Name), alpha=0.12) +
+  geom_line(aes(x=Time_Period, y=mean_surv, color=Treatment_Name, group=Treatment_Name), linewidth=1.2) +
+  geom_point(aes(x=Time_Period, y=mean_surv, color=Treatment_Name, shape=Treatment_Name), size=3) +
+  scale_y_continuous(limits=c(0,100), expand = expansion(mult=c(0.02,0.05))) +
+  scale_color_manual(values=color_vals, name="Treatment") +
+  scale_fill_manual(values=color_vals, name="Treatment") +
+  scale_shape_manual(values=shape_vals, name="Treatment") +
+  labs(x="Months", y="Mean Survival Rate (%)", title="L. racemosa") +
+  theme_minimal(base_size=12)
+
+p_RHMA <- ggplot(filter(survival_by_time_mean, Species=="RHMA")) +
+  geom_ribbon(aes(x=Time_Period, ymin=mean_surv-se_surv, ymax=mean_surv+se_surv,
+                  fill=Treatment_Name, group=Treatment_Name), alpha=0.12) +
+  geom_line(aes(x=Time_Period, y=mean_surv, color=Treatment_Name, group=Treatment_Name), linewidth=1.2) +
+  geom_point(aes(x=Time_Period, y=mean_surv, color=Treatment_Name, shape=Treatment_Name), size=3) +
+  scale_y_continuous(limits=c(0,100), expand = expansion(mult=c(0.02,0.05))) +
+  scale_color_manual(values=color_vals, name="Treatment") +
+  scale_fill_manual(values=color_vals, name="Treatment") +
+  scale_shape_manual(values=shape_vals, name="Treatment") +
+  labs(x="Months", y="Mean Survival Rate (%)", title="R. mangle") +
+  theme_minimal(base_size=12)
+
+```
+
+
+
+---
+
+## Final Survival Rates (descriptive; totals)
+
+```{r final-survival}
+latest_survival <- ALLDATA_clean %>%
+  mutate(TP = readr::parse_number(as.character(Time_Period))) %>%
+  group_by(Species, Treatment_Name) %>%
+  filter(TP == max(TP, na.rm=TRUE)) %>%
+  summarise(n_total=n(), n_alive=sum(Surv_Bin), survival_rate=mean(Surv_Bin)*100, .groups="drop") %>%
+  arrange(Species, desc(survival_rate))
+
+latest_survival %>% kable(caption = "Final Survival Rates by Treatment and Species",
+                          col.names=c("Species","Treatment","Total","Alive","Survival Rate (%)"),
+                          digits=2) %>% kable_styling(bootstrap_options=c("striped","hover"))
+
+# Replicate-mean endpoint display (±SE); inference comes from site-adjusted models below
+endpoint_rep_stats <- rep_surv_TP6 %>%
+  group_by(Species, Treatment_Name) %>%
+  summarise(n_reps=dplyr::n(),
+            mean_surv=mean(surv_rate,na.rm=TRUE),
+            sd_surv=sd(surv_rate,na.rm=TRUE),
+            se_surv=sd_surv/sqrt(n_reps), .groups="drop")
+
+ggplot(endpoint_rep_stats, aes(Treatment_Name, mean_surv, fill=Treatment_Name)) +
+  geom_col(alpha=0.85) +
+  geom_errorbar(aes(ymin=mean_surv-se_surv, ymax=mean_surv+se_surv), width=0.25) +
+  facet_wrap(~ Species, labeller = labeller(Species=c("LARA"="L. racemosa","RHMA"="R. mangle"))) +
+  scale_fill_manual(values=color_vals) +
+  labs(
+    # title="Final Survival Replicate Means (±SE)",
+       x="Treatment", y="Survival (%)", fill="Treatment") +
+  theme_minimal() + theme(axis.text.x=element_text(angle=45,hjust=1), legend.position="none")
+```
+add significance letters to these graphs**
+---
+
+# Statistical Analysis
+
+## Endpoint (TP6) — replicate-level, site-adjusted models
+
+```{r endpoint-models}
+# LARA: standard binomial GLM (Site fixed)
+mod_lara_ep <- glm(
+  cbind(n_alive, n_total - n_alive) ~ Treatment_Name + Site,
+  data = filter(rep_surv_TP6, Species=="LARA"),
+  family = binomial()
+)
+summary(mod_lara_ep)
+car::Anova(mod_lara_ep, type=3, test.statistic="Wald")
+emm_lara_ep <- emmeans(mod_lara_ep, ~ Treatment_Name, type="response")
+summary(emm_lara_ep)
+pairs(emm_lara_ep, adjust="tukey") %>% summary(exp=TRUE)
+
+# RHMA: bias-reduced binomial GLM (Site fixed; handles separation)
+mod_rhma_ep <- glm(
+  cbind(n_alive, n_total - n_alive) ~ Treatment_Name + Site,
+  data = filter(rep_surv_TP6, Species=="RHMA"),
+  family = binomial(),
+  method = "brglmFit"
+)
+summary(mod_rhma_ep)
+car::Anova(mod_rhma_ep, type=3, test.statistic="Wald")
+emm_rhma_ep <- emmeans(mod_rhma_ep, ~ Treatment_Name, type="response")
+summary(emm_rhma_ep)
+pairs(emm_rhma_ep, adjust="tukey") %>% summary(exp=TRUE)
+```
+
+---
+
+## Repeated-measures GLMMs (auto: Site fixed for LARA; Site random for RHMA)
+
+Found that site was not significant so it was removed. use the next code chunk to report on the data in my manuscript.
+
+```{r repeated-measures, eval=FALSE, include=FALSE}
+ALLDATA_model <- ALLDATA_clean %>%
+  mutate(Time_num = as.numeric(as.character(Time_Period)),
+         Site = droplevels(Site),
+         Prop_ID = droplevels(factor(Prop_ID)),
+         Treatment_Name = droplevels(Treatment_Name))%>%
+  filter(Time_num == max(Time_num, na.rm=TRUE))
+
+# LARA: Site fixed
+glmer_LARA <- glmer(
+  Surv_Bin ~ Treatment_Name + Site + (1 | Prop_ID),
+  data = subset(ALLDATA_model, Species=="LARA"),
+  family = binomial(), control = glmerControl(optimizer="bobyqa")
+)
+
+# # RHMA: Site random (more stable under separation)
+# glmer_RHMA <- glmer(
+#   Surv_Bin ~ Treatment_Name + (1 | Site) + (1 | Prop_ID),
+#   data = subset(ALLDATA_model, Species=="RHMA"),
+#   family = binomial(), control = glmerControl(optimizer="bobyqa")
+# )
+
+library(logistf)
+logistf_rhma<- logistf(Surv_Bin ~ Treatment_Name, data = subset(ALLDATA_model, Species=="RHMA"))
+
+
+summary(glmer_LARA); summary(logistf_rhma)
+
+emm_lara_rm <- emmeans(glmer_LARA, ~ Treatment_Name, type="response",
+  mode = "latent",        # <-- key: average over random effects
+  regrid = "response"     # ensure consistent back-transform
+  )
+emm_rhma_rm <- emmeans(logistf_rhma, ~ Treatment_Name, type="response",
+  mode = "latent",        # <-- key: average over random effects
+  regrid = "response"     # ensure consistent back-transform
+  )
+summary(emm_lara_rm); summary(emm_rhma_rm)
+# tukey pairwise on the same (population-averaged) scale
+contrast(emm_lara_rm, "pairwise", adjust = "tukey") |>
+  summary(infer = TRUE, type = "response")
+contrast(emm_rhma_rm, "pairwise", adjust = "tukey") |>
+  summary(infer = TRUE, type = "response")
+
+```
+
+```{r final-survival-stats-old}
+ALLDATA_model <- ALLDATA_clean %>%
+  mutate(Time_num = as.numeric(as.character(Time_Period)),
+         Site = droplevels(Site),
+         Prop_ID = droplevels(factor(Prop_ID)),
+         Treatment_Name = droplevels(Treatment_Name))%>%
+  filter(Time_num == max(Time_num, na.rm=TRUE))
+
+
+rhma_dat <- subset(ALLDATA_model, Species=="RHMA")
+rhma_fit <- logistf(Surv_Bin ~ Treatment_Name, data = rhma_dat)
+
+# Predicted probabilities per treatment (on observed covariate patterns)
+newdat <- distinct(subset(ALLDATA_model, Species == "RHMA"), Treatment_Name)
+
+# make predictions on the link (logit) scale
+pred_lin <- predict(rhma_fit, newdata = newdat, type = "link", se.fit = TRUE)
+
+# back-transform to probabilities and compute 95% CIs
+rhma_preds <- newdat %>%
+  mutate(
+    logit = pred_lin$fit,
+    SE = pred_lin$se.fit,
+    prob = plogis(logit),
+    lower = plogis(logit - 1.96 * SE),
+    upper = plogis(logit + 1.96 * SE)
+  )
+
+rhma_preds
+
+rhma_fit_site <- logistf(Surv_Bin ~ Treatment_Name + Site, data = subset(ALLDATA_model, Species == "RHMA"))
+anova(rhma_fit, rhma_fit_site)
+
+# Fit both models
+mod_full <- logistf(Surv_Bin ~ Treatment_Name + Site,
+                    data = subset(ALLDATA_model, Species == "RHMA"))
+
+mod_reduced <- logistf(Surv_Bin ~ Treatment_Name,
+                       data = subset(ALLDATA_model, Species == "RHMA"))
+
+# Likelihood ratio test (compare models)
+anova_test <- anova(mod_reduced, mod_full)
+
+anova_test
+
+# Estimated marginal means (predicted survival probabilities)
+emm_rhma <- emmeans(mod_reduced, ~ Treatment_Name, type = "response")
+
+# Pairwise comparisons (Tukey adjustment)
+pw_rhma <- contrast(emm_rhma, "pairwise", adjust = "tukey")
+
+# 2) Tidy the contrast names into lhs/rhs using a single regex
+pw_df <- summary(pw_rhma) %>%
+  as.data.frame() %>%
+  transmute(
+    lhs = sub("^(.*?)[ ]?[/-][ ]?.*$", "\\1", contrast),
+    rhs = sub("^.*?[ ]?[/-][ ]?(.*)$", "\\1", contrast),
+    p.value = p.value
+  )
+
+# 3) Build the named p-value vector in "A-B" form (exactly one '-')
+pvec <- setNames(pw_df$p.value, paste(pw_df$lhs, pw_df$rhs, sep = "-"))
+
+# 4) Compact letter display from Tukey p-values
+letters_obj <- multcompView::multcompLetters(pvec)
+letters_vec <- letters_obj$Letters  # named: Treatment_Name -> "a","ab",...
+
+# 5) Attach letters to your emmeans table for plotting/reporting
+cld_rhma_tukey <- as.data.frame(emm_rhma) %>%
+  mutate(letters = letters_vec[Treatment_Name])
+
+cld_rhma_tukey
+
+
+
+
+
+# Fit final-only GLM for LARA
+lara_fit <- glm(
+  Surv_Bin ~ Treatment_Name + Site,
+  data = subset(ALLDATA_model, Species=="LARA"),
+  family = binomial()
+)
+lara_fit
+
+# EMMs and Tukey letters
+emm_lara <- emmeans(lara_fit, ~ Treatment_Name, type = "response")
+pw_lara  <- contrast(emm_lara, "pairwise", adjust = "tukey")
+pw_df_l  <- as.data.frame(summary(pw_lara))
+
+# Build p-value vector in "A-B" format
+pvec_l <- setNames(
+  pw_df_l$p.value,
+  paste(sub("^(.*?)[ ]?[-/][ ]?.*$","\\1", pw_df_l$contrast),
+        sub("^.*?[ ]?[-/][ ]?(.*)$","\\1", pw_df_l$contrast),
+        sep = "-")
+)
+
+letters_l <- multcompView::multcompLetters(pvec_l)$Letters
+
+cld_lara_tukey <- as.data.frame(emm_lara) |>
+  mutate(letters = letters_l[Treatment_Name])
+cld_lara_tukey
+
+
+
+ggplot(endpoint_rep_stats, aes(Treatment_Name, mean_surv, fill=Treatment_Name)) +
+  geom_col(alpha=0.85) +
+  geom_errorbar(aes(ymin=mean_surv-se_surv, ymax=mean_surv+se_surv), width=0.25) +
+  facet_wrap(~ Species, labeller = labeller(Species=c("LARA"="L. racemosa","RHMA"="R. mangle"))) +
+  scale_fill_manual(values=color_vals) +
+  labs(title="Final Survival (TP6) — Replicate Means (±SE)",
+       x="Treatment", y="Survival (%)", fill="Treatment") +
+  theme_minimal() + theme(axis.text.x=element_text(angle=45,hjust=1), legend.position="none")
+```
+
+```{r final-survival-stats}
+# --- packages ---
+library(dplyr)
+library(emmeans)
+library(multcompView)
+library(logistf)
+library(ggplot2)
+
+# --- helper: Tukey letters from an emmeans object (robust to contrast name formats) ---
+letters_from_emm <- function(emm_obj) {
+  pw <- contrast(emm_obj, "pairwise", adjust = "tukey") |> summary()
+  pw_df <- as.data.frame(pw)
+
+  # parse "A - B" or "A / B" into lhs, rhs
+  lhs <- sub("^(.*?)[ ]?[-/][ ]?.*$", "\\1", pw_df$contrast)
+  rhs <- sub("^.*?[ ]?[-/][ ]?(.*)$", "\\1", pw_df$contrast)
+
+  pvec <- setNames(pw_df$p.value, paste(lhs, rhs, sep = "-"))
+  multcompView::multcompLetters(pvec)$Letters  # named vector
+}
+ALLDATA_model <- ALLDATA_clean %>%
+  mutate(
+    Time_num = as.numeric(as.character(Time_Period)),
+    Site = droplevels(Site),  # keep only used sites
+    Prop_ID = factor(Prop_ID),  # no need for droplevels here
+    Treatment_Name = factor(
+      Treatment_Name,
+      levels = c("Soil", "Glass", "25% SG", "75% SG", "100% SG")
+    )
+  ) %>%
+  filter(Time_num == max(Time_num, na.rm = TRUE))
+
+# --- 1) LARA letters (final TP only) ---
+lara_dat <- subset(ALLDATA_model, Species == "LARA")
+lara_fit <- glm(Surv_Bin ~ Treatment_Name + Site, data = lara_dat, family = binomial())
+summary(lara_fit)
+emm_lara  <- emmeans(lara_fit, ~ Treatment_Name, type = "response")
+let_lara  <- letters_from_emm(emm_lara)
+
+letters_lara_df <- tibble(
+  Species = "LARA",
+  Treatment_Name = names(let_lara),
+  letters = unname(let_lara)
+)
+
+# --- 2) RHMA letters (Firth; final TP only) ---
+rhma_dat <- subset(ALLDATA_model, Species == "RHMA")
+rhma_fit <- logistf(Surv_Bin ~ Treatment_Name, data = rhma_dat)
+summary(rhma_fit)
+emm_rhma  <- emmeans(rhma_fit, ~ Treatment_Name, type = "response")
+let_rhma  <- letters_from_emm(emm_rhma)
+
+letters_rhma_df <- tibble(
+  Species = "RHMA",
+  Treatment_Name = names(let_rhma),
+  letters = unname(let_rhma)
+)
+
+# --- 3) Combine and join onto your summary (endpoint_rep_stats has mean_surv, se_surv in PERCENT) ---
+letters_df <- bind_rows(letters_lara_df, letters_rhma_df)
+
+plot_df <- endpoint_rep_stats %>%
+  left_join(letters_df, by = c("Species", "Treatment_Name"))
+
+# safety: keep letters within panel; tweak the offset if needed
+label_offset <- 3  # percent points above the error bar
+plot_df <- plot_df %>%
+  mutate(label_y = pmin(mean_surv + se_surv + label_offset, 105))
+
+# --- 4) Plot with letters ---
+ggplot(plot_df, aes(Treatment_Name, mean_surv, fill = Treatment_Name)) +
+  geom_col(alpha = 0.85) +
+  geom_errorbar(aes(ymin = mean_surv - se_surv, ymax = mean_surv + se_surv), width = 0.25) +
+  geom_text(aes(y = label_y, label = letters), size = 5) +
+  facet_wrap(~ Species, labeller = labeller(Species = c(LARA = "L. racemosa", RHMA = "R. mangle"))) +
+  scale_fill_manual(values = color_vals) +
+  labs(
+    # title = "Final Survival Replicate Means (±SE)",
+    x = "Treatment", y = "Survival (%)", fill = "Treatment"
+  ) +
+  coord_cartesian(ylim = c(0, 110)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+
+```
+
+
+
+---
+
+## Sargassum presence & gradient (replicate unit, site-adjusted)
+
+```{r sargassum-effects}
+# Presence (endpoint replicate-level)
+rep_TP6_with_groups <- rep_surv_TP6 %>%
+  left_join(distinct(ALLDATA_clean, Treatment_Name, Sarg_group), by="Treatment_Name")
+
+glm_sarg_presence <- glm(
+  cbind(n_alive, n_total - n_alive) ~ Species * Sarg_group + Site,
+  data = rep_TP6_with_groups, family = binomial()
+)
+summary(glm_sarg_presence)
+emmeans(glm_sarg_presence, ~ Sarg_group | Species, type="response") %>% summary()
+
+# Gradient (endpoint replicate-level)
+rep_TP6_with_pct <- rep_surv_TP6 %>%
+  left_join(distinct(ALLDATA_clean, Treatment_Name, SG_pct), by="Treatment_Name")
+
+glm_sarg_gradient <- glm(
+  cbind(n_alive, n_total - n_alive) ~ Species * SG_pct + Site,
+  data = rep_TP6_with_pct, family = binomial()
+)
+summary(glm_sarg_gradient)
+```
+
+---
+
+## Sargassum gradient (individual-level, site-adjusted; plotting)
+
+```{r gradient-plot}
+final_data <- ALLDATA_clean %>%
+  mutate(TP = readr::parse_number(as.character(Time_Period))) %>%
+  filter(TP == max(TP, na.rm=TRUE)) %>%
+  mutate(Site = droplevels(Site))
+
+gradient_model <- glm(Surv_Bin ~ SG_pct * Species + Site, data=final_data, family=binomial())
+summary(gradient_model)
+
+# --- Site-adjusted predictions over SG_pct via emmeans (weights = proportional to observed Site mix) ---
+library(emmeans)
+
+sg_grid <- seq(0, 100, by = 5)
+
+emm_grid <- ref_grid(
+  gradient_model,
+  at = list(SG_pct = sg_grid),
+  weights = "proportional"   # averages over Site using observed frequencies
+)
+
+grad_emm <- emmeans(emm_grid, ~ SG_pct | Species, type = "response")
+gradient_pred <- as.data.frame(grad_emm) %>%
+  rename(pred_survival = prob)    # if your emmeans version names it 'prob', use that instead
+
+# Observed points for reference (unchanged)
+obs_data <- final_data %>%
+  group_by(SG_pct, Species, Treatment_Name) %>%
+  summarise(obs_survival = mean(Surv_Bin) * 100, .groups = "drop")
+
+# Plot
+ggplot(gradient_pred, aes(x = SG_pct, y = pred_survival * 100, color = Species)) +
+  geom_line(linewidth = 1.2, alpha = 0.9) +
+  geom_point(data = obs_data,
+             aes(y = obs_survival, shape = Treatment_Name),
+             size = 4, alpha = 0.9) + #, inherit.aes = FALSE
+  scale_color_manual(values = c("RHMA" = "#D73502", "LARA" = "#8B7355"),
+                     labels = c("RHMA" = "R. mangle", "LARA" = "L. racemosa")) +
+  scale_shape_manual(values = shape_vals) +
+  labs(
+    # title = "Survival vs Sargassum Percentage — Site-adjusted predictions",
+       x = "Sargassum Content (%)", y = "Predicted Survival (%)",
+       color = "Species", shape = "Treatment") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+```
+
+---
+
+## Kaplan–Meier & Optional Cox (site-adjusted via strata)
+
+```{r kaplan-meier}
+surv_data <- ALLDATA_clean %>%
+  group_by(Species, Prop_ID, Treatment_Name, Site) %>%
+  summarise(
+    last_alive = max(as.numeric(as.character(Time_Period[Surv_Bin==1])), na.rm=TRUE),
+    final_status = ifelse(any(Surv_Bin==0), 1, 0),
+    survival_time = ifelse(final_status==1,
+                           min(as.numeric(as.character(Time_Period[Surv_Bin==0])), na.rm=TRUE),
+                           max(as.numeric(as.character(Time_Period)))),
+    .groups="drop"
+  ) %>% mutate(
+    Treatment = dplyr::recode(Treatment_Name, "Glass"="CG", "100% SG"="100% SG"),
+    Treatment = factor(Treatment, levels=c("Soil","CG","25% SG","75% SG","100% SG"))
+  )
+
+fit_lara <- survfit(Surv(survival_time, final_status) ~ Treatment, data = subset(surv_data, Species=="LARA"))
+fit_rhma <- survfit(Surv(survival_time, final_status) ~ Treatment, data = subset(surv_data, Species=="RHMA"))
+
+p_lara <- ggsurvplot(fit_lara, data=subset(surv_data, Species=="LARA"),
+                     pval=TRUE, conf.int=TRUE, risk.table=TRUE, risk.table.height=0.22,
+                     risk.table.fontsize=3, risk.table.y.text.col=TRUE, risk.table.y.text=FALSE,
+                     legend.title="Treatment", title="L. racemosa — Kaplan–Meier", palette="jco")
+p_rhma <- ggsurvplot(fit_rhma, data=subset(surv_data, Species=="RHMA"),
+                     pval=TRUE, conf.int=TRUE, risk.table=TRUE, risk.table.height=0.22,
+                     risk.table.fontsize=3, risk.table.y.text.col=TRUE, risk.table.y.text=FALSE,
+                     legend.title="Treatment", title="R. mangle — Kaplan–Meier", palette="jco")
+
+arrange_ggsurvplots(list(p_lara, p_rhma), ncol=2, nrow=1, common.legend=TRUE, legend="bottom")
+```
+
+```{r optional-cox}
+cox_lara <- coxph(Surv(survival_time, final_status) ~ Treatment + strata(Site),
+                  data = subset(surv_data, Species=="LARA"))
+cox_rhma <- coxph(Surv(survival_time, final_status) ~ Treatment + strata(Site),
+                  data = subset(surv_data, Species=="RHMA"))
+summary(cox_lara); summary(cox_rhma)
+
+ggsurvplot(
+  cox_lara,
+  data = subset(surv_data, Species == "LARA"),
+  legend.title = "Treatment",
+  title = "L. racemosa — Cox (strata: Site)",
+  pval = TRUE,
+  conf.int = TRUE
+)
+
+
+ggsurvplot(survfit(cox_rhma), data=subset(surv_data, Species=="RHMA"),
+           legend.title="Treatment", title="R. mangle — Cox (strata: Site)",
+           pval=TRUE, conf.int=TRUE)
+```
+
+---
+
+# Results Summary
+
+## Treatment Rankings (descriptive; totals at TP6)
+
+```{r rankings}
+survival_ranks <- latest_survival %>%
+  group_by(Species) %>%
+  arrange(desc(survival_rate)) %>%
+  mutate(rank=row_number()) %>%
+  dplyr::select(Species, Treatment_Name, survival_rate, rank)
+
+survival_ranks %>%
+  kable(caption="Treatment Rankings by Survival Rate",
+        col.names=c("Species","Treatment","Survival Rate (%)","Rank"),
+        digits=2) %>%
+  kable_styling(bootstrap_options=c("striped","hover")) %>%
+  row_spec(which(survival_ranks$Treatment_Name=="Soil"), bold=TRUE)
+```
+
+## Key Findings (descriptive)
+
+```{r key-findings}
+cat("OVERALL SURVIVAL STATISTICS (descriptive, not site-adjusted):\n\n")
+overall_stats <- final_data %>%
+  group_by(Treatment_Name) %>%
+  summarise(n=n(), survival_rate=mean(Surv_Bin)*100, alive=sum(Surv_Bin), dead=n-alive, .groups="drop") %>%
+  arrange(desc(survival_rate))
+overall_stats %>% kable(caption="Overall Survival by Treatment (Both Species Combined)",
+                        col.names=c("Treatment","N","Survival %","Alive","Dead"), digits=2) %>%
+  kable_styling(bootstrap_options=c("striped","hover"))
+
+cat("\n\nSARGASSUM EFFECT (descriptive):\n")
+sarg_effect <- final_data %>% group_by(Sarg_group) %>% summarise(n=n(), survival_rate=mean(Surv_Bin)*100, .groups="drop")
+cat("Difference (No Sargassum - With Sargassum):", round(diff(sarg_effect$survival_rate), 2), "%\n")
+
+cat("\n\nSPECIES COMPARISON (descriptive):\n")
+species_stats <- final_data %>% group_by(Species) %>% summarise(n=n(), survival_rate=mean(Surv_Bin)*100, .groups="drop")
+species_stats %>% kable(caption="Overall Survival by Species", digits=2) %>% kable_styling(bootstrap_options=c("striped","hover"))
+```
+
+---
+
+### Notes
+
+* Endpoint inference uses **replicate-level binomial models** with **Site adjusted**: GLM for **LARA**, **brglm2** for **RHMA** (handles complete separation cleanly).
+* Repeated-measures GLMMs: **Site fixed** for LARA; **Site random** for RHMA (more stable under separation).
+* Descriptive figures explicitly show **replicate means (±SE)**; captions should note when results are **site-adjusted** (models) vs **unadjusted** (displays).
+
+
+------------------------------------------------------------------------
+
+*Analysis completed with
+`r nrow(distinct(ALLDATA_clean, Species, Prop_ID))` unique plants across
+`r length(unique(ALLDATA_clean$Treatment_Name))` treatments over
+`r length(unique(ALLDATA_clean$Time_Period))` time periods. Quality
+control removed `r nrow(flagged_ids)` plants with data inconsistencies.*
+
+# Session Information
+
+```{r session-info} sessionInfo()}
+```
