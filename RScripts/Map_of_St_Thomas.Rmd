@@ -242,6 +242,8 @@ ggplot(usa) +
              size = 3, alpha = 0.9, position = position_jitter(width = 0.0004, height = 0.0004)) +
   ggrepel::geom_text_repel(data = site_lbl, aes(Long, Lat, label = Site.Name),
                            size = 3, min.segment.length = 0, seed = 42) +
+  annotate("text", x = -64.925, y = 18.35, label = "St. Thomas", 
+           fontface = "bold", size = 4, color = "black") +  
   coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
   scale_color_manual(values = c(RHMA="#D55E00", LARA="#0072B2")) +
   labs(x = "Longitude", y = "Latitude", color = "Species", shape = "Species") +
