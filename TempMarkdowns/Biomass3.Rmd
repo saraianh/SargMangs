@@ -100,7 +100,19 @@ processed_raw <- processed_raw %>%
     )
   )
 
-biomass_data <- processed_raw
+processed_clean <- processed_raw %>%
+  mutate(
+    # convert negatives to 0 or abs() for biological realism
+    across(c(leaves, stem, fine_roots, coarse_roots),
+           ~ if_else(.x < 0, abs(.x), .x)),
+    data_note = if_else(
+      leaves < 0 | stem < 0 | fine_roots < 0 | coarse_roots < 0,
+      "Corrected negative weight (paper bag error)",
+      NA_character_
+    )
+  )
+
+biomass_data <- processed_clean
 ```
 
 Creating a figure with all the biomass displayed plus significant letters
@@ -335,6 +347,42 @@ letters_fine_R   <- letters_tbl(fit_fine_R, resp="Fine_lp", transform="exp1")
 letters_coarse_R <- letters_tbl(fit_coarse_R, resp="Coarse_lp", transform="exp1")
 
 ```
+# Analysis of Variance Table
+#
+# Response: AGB_lp
+#                Df Sum Sq Mean Sq F value
+# Treatment_Name  4 3.5937 0.89841  8.4986
+# Residuals      45 4.7571 0.10571
+#                   Pr(>F)
+# Treatment_Name 3.389e-05 ***
+# Residuals
+# ---
+# Signif. codes:
+# 0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# Analysis of Variance Table
+#
+# Response: Fine_lp
+#                Df Sum Sq  Mean Sq F value
+# Treatment_Name  4 1.1744 0.293589  9.0602
+# Residuals      45 1.4582 0.032404
+#                   Pr(>F)
+# Treatment_Name 1.863e-05 ***
+# Residuals
+# ---
+# Signif. codes:
+# 0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# Analysis of Variance Table
+#
+# Response: Coarse_lp
+#                Df Sum Sq Mean Sq F value
+# Treatment_Name  4 2.4857 0.62143  8.0491
+# Residuals      45 3.4742 0.07720
+#                  Pr(>F)
+# Treatment_Name 5.53e-05 ***
+# Residuals
+# ---
+# Signif. codes:
+# 0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
 
 ```{r}
 plot_box_letters <- function(df, y, ylab){
@@ -362,6 +410,54 @@ letters_fine_R %>% dplyr::select(Treatment_Name, mean_bt, lower_bt, upper_bt, le
 letters_coarse_R %>% dplyr::select(Treatment_Name, mean_bt, lower_bt, upper_bt, letters) %>% arrange(Treatment_Name)
 
 ```
+Treatment_Name
+<fctr>
+mean_bt
+<dbl>
+lower_bt
+<dbl>
+upper_bt
+<dbl>
+letters
+<chr>
+Soil	5.056803	3.593527	6.986207	b
+Glass	2.922635	1.974957	4.172197	a
+25% SG	2.275744	1.484350	3.319237	a
+75% SG	1.743220	1.080480	2.617077	a
+100% SG	2.365977	1.552784	3.438215	a
+
+Treatment_Name
+<fctr>
+mean_bt
+<dbl>
+lower_bt
+<dbl>
+upper_bt
+<dbl>
+letters
+<chr>
+Soil	1.5618722	1.1981897	1.985725	c
+Glass	0.6096880	0.3811773	0.876005	a
+25% SG	1.0336686	0.7449697	1.370132	b
+75% SG	0.9237482	0.6506536	1.242025	ab
+100% SG	0.8224510	0.5637365	1.123969	ab
+
+Treatment_Name
+<fctr>
+mean_bt
+<dbl>
+lower_bt
+<dbl>
+upper_bt
+<dbl>
+letters
+<chr>
+Soil	2.1281031	1.4697164	2.962005	b
+Glass	1.9210455	1.3062392	2.699749	b
+25% SG	1.0358575	0.6073609	1.578584	a
+75% SG	0.8935336	0.4949926	1.398319	a
+100% SG	0.8636909	0.4714310	1.360521	a
+
 
 ```{r}
 # pick y-positions a bit above the CI max per treatment
@@ -400,6 +496,42 @@ letters_fine_L   <- letters_tbl(fit_fine_L, resp="Fine_lp", transform="exp1")
 letters_coarse_L <- letters_tbl(fit_coarse_L, resp="Coarse_lp", transform="exp1")
 
 ```
+Analysis of Variance Table
+
+Response: AGB_lp
+               Df Sum Sq Mean Sq F value
+Treatment_Name  3 2.2464 0.74878  15.677
+Residuals      32 1.5284 0.04776        
+                  Pr(>F)    
+Treatment_Name 1.896e-06 ***
+Residuals                   
+---
+Signif. codes:  
+0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+Analysis of Variance Table
+
+Response: Fine_lp
+               Df  Sum Sq  Mean Sq F value
+Treatment_Name  3 0.39411 0.131370  7.2524
+Residuals      32 0.57965 0.018114        
+                  Pr(>F)    
+Treatment_Name 0.0007607 ***
+Residuals                   
+---
+Signif. codes:  
+0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+Analysis of Variance Table
+
+Response: Coarse_lp
+               Df  Sum Sq  Mean Sq F value
+Treatment_Name  3 0.40375 0.134583  11.717
+Residuals      31 0.35608 0.011486        
+                 Pr(>F)    
+Treatment_Name 2.69e-05 ***
+Residuals                  
+---
+Signif. codes:  
+0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
 
 ```{r}
 p1L <- plot_box_letters(biomass_L, "AGB",       "Above-ground biomass (g)")
@@ -416,6 +548,50 @@ letters_coarse_L %>% dplyr::select(Treatment_Name, mean_bt, lower_bt, upper_bt, 
 
 ```
 
+Treatment_Name
+<fctr>
+mean_bt
+<dbl>
+lower_bt
+<dbl>
+upper_bt
+<dbl>
+letters
+<chr>
+Soil	9.100955e-01	0.5907904597	1.2934917	b
+Glass	2.220446e-16	-0.1671670379	0.2007210	a
+25% SG	1.924395e-01	-0.0068970857	0.4317871	a
+75% SG	2.670008e-01	0.0005011664	0.6044870	a
+
+Treatment_Name
+<fctr>
+mean_bt
+<dbl>
+lower_bt
+<dbl>
+upper_bt
+<dbl>
+letters
+<chr>
+Soil	0.30377121	0.164871272	0.4592337	b
+Glass	0.00000000	-0.106537049	0.1192406	a
+25% SG	0.06074182	-0.052266484	0.1872253	a
+75% SG	0.15380027	-0.002367168	0.3344139	ab
+
+Treatment_Name
+<fctr>
+mean_bt
+<dbl>
+lower_bt
+<dbl>
+upper_bt
+<dbl>
+letters
+<chr>
+Soil	0.2935711729	0.18237969	0.41521916	b
+Glass	0.0003992818	-0.08559203	0.09447725	a
+25% SG	0.0473786289	-0.04729395	0.15145904	a
+75% SG	0.0244342431	-0.08779547	0.15047173	a
 ```{r}
 # pick y-positions a bit above the CI max per treatment
 pos_agb_L <- letters_agb_L %>%
@@ -459,6 +635,141 @@ pairs(em_fine_shift,   adjust = "holm")
 pairs(em_coarse_shift, adjust = "holm")
 
 ```
+Analysis of Variance Table
+
+Response: Fine_lp
+                      Df Sum Sq Mean Sq
+AGB_lp                 1 8.0734  8.0734
+Treatment_Name         4 0.4217  0.1054
+Species                1 0.2534  0.2534
+AGB_lp:Treatment_Name  4 0.3829  0.0957
+Residuals             75 1.0928  0.0146
+                       F value    Pr(>F)    
+AGB_lp                554.0863 < 2.2e-16 ***
+Treatment_Name          7.2358 5.539e-05 ***
+Species                17.3933 8.076e-05 ***
+AGB_lp:Treatment_Name   6.5692 0.0001376 ***
+Residuals                                   
+---
+Signif. codes:  
+0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+Analysis of Variance Table
+
+Response: Coarse_lp
+                      Df  Sum Sq Mean Sq
+AGB_lp                 1 15.5239 15.5239
+Treatment_Name         4  0.7053  0.1763
+Species                1  0.1214  0.1214
+AGB_lp:Treatment_Name  4  0.1169  0.0292
+Residuals             74  1.7454  0.0236
+                       F value    Pr(>F)    
+AGB_lp                658.1582 < 2.2e-16 ***
+Treatment_Name          7.4756 4.099e-05 ***
+Species                 5.1490   0.02617 *  
+AGB_lp:Treatment_Name   1.2394   0.30169    
+Residuals                                   
+---
+Signif. codes:  
+0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+Species = LARA:
+ contrast         estimate     SE df t.ratio
+ Soil - Glass       0.2182 0.0490 75   4.454
+ Soil - 25% SG      0.0258 0.0499 75   0.516
+ Soil - 75% SG      0.0147 0.0556 75   0.265
+ Soil - 100% SG     0.1898 0.0754 75   2.518
+ Glass - 25% SG    -0.1924 0.0400 75  -4.808
+ Glass - 75% SG    -0.2034 0.0431 75  -4.718
+ Glass - 100% SG   -0.0284 0.0601 75  -0.471
+ 25% SG - 75% SG   -0.0110 0.0433 75  -0.255
+ 25% SG - 100% SG   0.1640 0.0599 75   2.737
+ 75% SG - 100% SG   0.1751 0.0594 75   2.946
+ p.value
+  0.0002
+  1.0000
+  1.0000
+  0.0696
+  0.0001
+  0.0001
+  1.0000
+  1.0000
+  0.0464
+  0.0300
+
+Species = RHMA:
+ contrast         estimate     SE df t.ratio
+ Soil - Glass       0.2182 0.0490 75   4.454
+ Soil - 25% SG      0.0258 0.0499 75   0.516
+ Soil - 75% SG      0.0147 0.0556 75   0.265
+ Soil - 100% SG     0.1898 0.0754 75   2.518
+ Glass - 25% SG    -0.1924 0.0400 75  -4.808
+ Glass - 75% SG    -0.2034 0.0431 75  -4.718
+ Glass - 100% SG   -0.0284 0.0601 75  -0.471
+ 25% SG - 75% SG   -0.0110 0.0433 75  -0.255
+ 25% SG - 100% SG   0.1640 0.0599 75   2.737
+ 75% SG - 100% SG   0.1751 0.0594 75   2.946
+ p.value
+  0.0002
+  1.0000
+  1.0000
+  0.0696
+  0.0001
+  0.0001
+  1.0000
+  1.0000
+  0.0464
+  0.0300
+
+P value adjustment: holm method for 10 tests 
+Species = LARA:
+ contrast         estimate     SE df t.ratio
+ Soil - Glass     -0.19936 0.0622 74  -3.204
+ Soil - 25% SG    -0.02410 0.0636 74  -0.379
+ Soil - 75% SG    -0.00421 0.0708 74  -0.060
+ Soil - 100% SG    0.07098 0.0950 74   0.747
+ Glass - 25% SG    0.17527 0.0514 74   3.412
+ Glass - 75% SG    0.19515 0.0552 74   3.537
+ Glass - 100% SG   0.27034 0.0758 74   3.565
+ 25% SG - 75% SG   0.01988 0.0556 74   0.358
+ 25% SG - 100% SG  0.09508 0.0758 74   1.255
+ 75% SG - 100% SG  0.07519 0.0751 74   1.002
+ p.value
+  0.0140
+  1.0000
+  1.0000
+  1.0000
+  0.0084
+  0.0064
+  0.0064
+  1.0000
+  1.0000
+  1.0000
+
+Species = RHMA:
+ contrast         estimate     SE df t.ratio
+ Soil - Glass     -0.19936 0.0622 74  -3.204
+ Soil - 25% SG    -0.02410 0.0636 74  -0.379
+ Soil - 75% SG    -0.00421 0.0708 74  -0.060
+ Soil - 100% SG    0.07098 0.0950 74   0.747
+ Glass - 25% SG    0.17527 0.0514 74   3.412
+ Glass - 75% SG    0.19515 0.0552 74   3.537
+ Glass - 100% SG   0.27034 0.0758 74   3.565
+ 25% SG - 75% SG   0.01988 0.0556 74   0.358
+ 25% SG - 100% SG  0.09508 0.0758 74   1.255
+ 75% SG - 100% SG  0.07519 0.0751 74   1.002
+ p.value
+  0.0140
+  1.0000
+  1.0000
+  1.0000
+  0.0084
+  0.0064
+  0.0064
+  1.0000
+  1.0000
+  1.0000
+
+P value adjustment: holm method for 10 tests 
+
 
 Allometry plots (log scale)
 ```{r}
@@ -523,7 +834,7 @@ combined_plot2<- combined_plot +
     legend.title = element_text(face = "bold"),
     legend.margin = margin(t = 2, r = 0, b = 2, l = 0)
   )
-
+combined_plot2
 
 
 pA <- plot_allometry(biomass, "Fine_lp",   "log1p(Fine root)")
@@ -556,6 +867,137 @@ letters_FC_R <- letters_tbl(lm(logFC ~ Treatment_Name, data = biomass_R), resp="
 letters_FC_L <- letters_tbl(lm(logFC ~ Treatment_Name, data = biomass_L), resp="logFC", transform="exp1")
 
 ```
+Analysis of Variance Table
+
+Response: logRS
+                       Df  Sum Sq  Mean Sq
+Treatment_Name          4 0.65888 0.164719
+Species                 1 0.00303 0.003028
+Treatment_Name:Species  3 0.10855 0.036183
+Residuals              76 1.86726 0.024569
+                       F value    Pr(>F)    
+Treatment_Name          6.7043 0.0001123 ***
+Species                 0.1232 0.7265147    
+Treatment_Name:Species  1.4727 0.2286868    
+Residuals                                   
+---
+Signif. codes:  
+0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+Analysis of Variance Table
+
+Response: logFC
+                       Df Sum Sq Mean Sq
+Treatment_Name          4 1.4276 0.35689
+Species                 1 1.0944 1.09440
+Treatment_Name:Species  3 0.9359 0.31196
+Residuals              76 3.3897 0.04460
+                       F value    Pr(>F)    
+Treatment_Name          8.0017 1.942e-05 ***
+Species                24.5372 4.296e-06 ***
+Treatment_Name:Species  6.9945 0.0003233 ***
+Residuals                                   
+---
+Signif. codes:  
+0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+Species = LARA:
+ contrast         estimate     SE df t.ratio
+ Soil - Glass     -0.19193 0.0701 76  -2.738
+ Soil - 25% SG    -0.10018 0.0720 76  -1.391
+ Soil - 75% SG    -0.11375 0.0809 76  -1.405
+ Soil - 100% SG     nonEst     NA NA      NA
+ Glass - 25% SG    0.09175 0.0720 76   1.274
+ Glass - 75% SG    0.07818 0.0809 76   0.966
+ Glass - 100% SG    nonEst     NA NA      NA
+ 25% SG - 75% SG  -0.01357 0.0826 76  -0.164
+ 25% SG - 100% SG   nonEst     NA NA      NA
+ 75% SG - 100% SG   nonEst     NA NA      NA
+ p.value
+  0.0462
+  0.8200
+  0.8200
+      NA
+  0.8200
+  0.8200
+      NA
+  0.8700
+      NA
+      NA
+
+Species = RHMA:
+ contrast         estimate     SE df t.ratio
+ Soil - Glass     -0.14871 0.0701 76  -2.121
+ Soil - 25% SG    -0.18596 0.0701 76  -2.653
+ Soil - 75% SG    -0.27616 0.0701 76  -3.940
+ Soil - 100% SG   -0.00842 0.0701 76  -0.120
+ Glass - 25% SG   -0.03725 0.0701 76  -0.531
+ Glass - 75% SG   -0.12744 0.0701 76  -1.818
+ Glass - 100% SG   0.14029 0.0701 76   2.001
+ 25% SG - 75% SG  -0.09020 0.0701 76  -1.287
+ 25% SG - 100% SG  0.17753 0.0701 76   2.533
+ 75% SG - 100% SG  0.26773 0.0701 76   3.819
+ p.value
+  0.2229
+  0.0777
+  0.0018
+  1.0000
+  1.0000
+  0.2920
+  0.2447
+  0.6063
+  0.0937
+  0.0024
+
+P value adjustment: holm method for varying numbers of tests 
+Species = LARA:
+ contrast         estimate     SE df t.ratio
+ Soil - Glass      0.00825 0.0944 76   0.087
+ Soil - 25% SG    -0.01138 0.0970 76  -0.117
+ Soil - 75% SG    -0.11107 0.1090 76  -1.018
+ Soil - 100% SG     nonEst     NA NA      NA
+ Glass - 25% SG   -0.01963 0.0970 76  -0.202
+ Glass - 75% SG   -0.11932 0.1090 76  -1.094
+ Glass - 100% SG    nonEst     NA NA      NA
+ 25% SG - 75% SG  -0.09969 0.1110 76  -0.896
+ 25% SG - 100% SG   nonEst     NA NA      NA
+ 75% SG - 100% SG   nonEst     NA NA      NA
+ p.value
+  1.0000
+  1.0000
+  1.0000
+      NA
+  1.0000
+  1.0000
+      NA
+  1.0000
+      NA
+      NA
+
+Species = RHMA:
+ contrast         estimate     SE df t.ratio
+ Soil - Glass      0.39621 0.0944 76   4.195
+ Soil - 25% SG    -0.19861 0.0944 76  -2.103
+ Soil - 75% SG    -0.21552 0.0944 76  -2.282
+ Soil - 100% SG   -0.17731 0.0944 76  -1.877
+ Glass - 25% SG   -0.59483 0.0944 76  -6.298
+ Glass - 75% SG   -0.61173 0.0944 76  -6.477
+ Glass - 100% SG  -0.57352 0.0944 76  -6.072
+ 25% SG - 75% SG  -0.01691 0.0944 76  -0.179
+ 25% SG - 100% SG  0.02130 0.0944 76   0.226
+ 75% SG - 100% SG  0.03821 0.0944 76   0.405
+ p.value
+  0.0005
+  0.1939
+  0.1518
+  0.2572
+  <.0001
+  <.0001
+  <.0001
+  1.0000
+  1.0000
+  1.0000
+
+P value adjustment: holm method for varying numbers of tests 
+
 
 Figures: Back-transformed ratios with letters
 ```{r}
