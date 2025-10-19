@@ -1,0 +1,672 @@
+---
+title: "Biomass3"
+author: "Sarai Hutchinson"
+date: "2025-10-06"
+output: html_document
+---
+
+```{r}
+# ============================================================
+# 0) Libraries & Setup
+# ============================================================
+library(tidyverse)  # dplyr, ggplot2, readr, tidyr, etc.
+library(car)        # Levene's test
+library(agricolae)  # HSD.test
+library(gridExtra)  # grid.arrange
+library(tibble)     # rownames_to_column
+library(patchwork)
+library(emmeans)
+library(multcomp)
+library(broom)
+library(performance)
+
+# Optional: guard against function masking (uncomment if needed)
+# conflicted::conflict_prefer("filter", "dplyr")
+
+# Palettes
+okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7", "#999999")
+color_vals <- c(
+  "Soil"                = okabe_ito[1],
+  "Glass"               = okabe_ito[6],
+  "25% SG"              = okabe_ito[3],
+  "75% SG"              = okabe_ito[2],
+  "100% SG"             = okabe_ito[7]
+)
+
+# ============================================================
+# 1) Load & Inspect Raw Data
+# ============================================================
+data_path <- "C:\\Users\\sarai\\OneDrive\\Email attachments\\Documents\\UVI\\Thesis.Work\\SargMangs\\Data/Combined_Biomass.csv"
+raw_data  <- readr::read_csv(data_path, show_col_types = FALSE)
+
+cat("Data structure:\n"); str(raw_data)
+cat("\nFirst few rows:\n"); print(head(raw_data))
+cat("\nColumn names:\n"); print(names(raw_data))
+cat("\nMissing values by column:\n"); print(colSums(is.na(raw_data)))
+```
+
+
+```{r}
+# ============================================================
+# 2) Tidy to Wide (per plant) & Harmonize Columns
+# ============================================================
+processed_raw <- raw_data %>%
+  dplyr::filter(SAMPLE != "DEAD ROOTS") %>%
+  dplyr::select(TREATMENT, SPECIES, PROP_ID, SAMPLE, `TOT_DRY_WT (g)`) %>%
+  tidyr::pivot_wider(
+    id_cols    = c(TREATMENT, SPECIES, PROP_ID),
+    names_from = SAMPLE,
+    values_from = `TOT_DRY_WT (g)`,
+    names_repair = "minimal"
+  ) %>%
+  dplyr::rename_with(~ stringr::str_to_lower(stringr::str_replace_all(.x, " ", "_"))) %>%
+  dplyr::rename(
+    treatment    = treatment,
+    species      = species,
+    prop_id      = prop_id,
+    leaves       = leaves,
+    stem         = stem,
+    fine_roots   = fine_roots,
+    coarse_roots = coarse_roots
+  )
+
+# # After your pivot_wider + rename block
+# # (1) Ensure hypocotyl column is present and correct per species
+# if ("hypo" %in% names(processed_raw)) {
+#   processed_raw <- processed_raw %>%
+#     dplyr::rename(hypocotyl = hypo) %>%
+#     dplyr::mutate(
+#       hypocotyl = dplyr::case_when(
+#         species == "LARA" ~ 0,                  # always 0 for LARA
+#         is.na(hypocotyl)  ~ 0,                  # if missing for RHMA, set 0
+#         TRUE               ~ hypocotyl
+#       )
+#     )
+# } else {
+#   processed_raw <- processed_raw %>%
+#     dplyr::mutate(hypocotyl = dplyr::if_else(species == "LARA", 0, 0))  # 0 for all if absent
+# }
+
+# Map TREATMENT codes A–E to labels (keep existing labels if already set)
+processed_raw <- processed_raw %>%
+  dplyr::mutate(
+    treatment = dplyr::case_when(
+      treatment == "A" ~ "Soil",
+      treatment == "B" ~ "Glass",
+      treatment == "C" ~ "100% SG",
+      treatment == "D" ~ "25% SG",
+      treatment == "E" ~ "75% SG",
+      TRUE ~ treatment
+    )
+  )
+
+biomass_data <- processed_raw
+```
+
+Creating a figure with all the biomass displayed plus significant letters
+```{r}
+# ============================================================
+# 0) Libraries
+# ============================================================
+library(dplyr)
+library(tidyr)
+library(forcats)
+library(ggplot2)
+library(stringr)
+
+#use abs() instead of 0, since even if the true value was small, it wasn’t literally zero — this preserves the magnitude distribution.
+processed_clean <- processed_raw %>%
+  mutate(
+    # convert negatives to 0 or abs() for biological realism
+    across(c(leaves, stem, fine_roots, coarse_roots),
+           ~ if_else(.x < 0, abs(.x), .x)),
+    data_note = if_else(
+      leaves < 0 | stem < 0 | fine_roots < 0 | coarse_roots < 0,
+      "Corrected negative weight (paper bag error)",
+      NA_character_
+    )
+  )
+# ============================================================
+# 1) Options you can toggle
+# ============================================================
+include_hypocotyl_in_stem <- FALSE   # TRUE if you want RHMA hypocotyl added to "Stem"
+treat_order <- c("Soil","Glass","25% SG","75% SG","100% SG")
+
+# ============================================================
+# 2) Clean + compute components from your processed_raw
+#    Expect columns: treatment, species, prop_id, leaves, stem, fine_roots, coarse_roots
+#    Optional: hypocotyl (for RHMA). If absent it’s treated as 0.
+# ============================================================
+dat_biomass <- processed_clean %>%
+  mutate(
+    leaves       = coalesce(leaves, 0),
+    stem         = coalesce(stem, 0),
+    fine_roots   = coalesce(fine_roots, 0),
+    coarse_roots = coalesce(coarse_roots, 0),
+    hypocotyl    = if ("hypocotyl" %in% names(.)) coalesce(hypocotyl, 0) else 0,
+    Stem         = stem + if_else(include_hypocotyl_in_stem & species == "RHMA", hypocotyl, 0),
+    Leaf         = leaves,
+    Root         = fine_roots + coarse_roots,
+    treatment    = factor(treatment, levels = treat_order)
+  ) %>%
+  dplyr::select(species, treatment, Leaf, Stem, Root)
+
+# ============================================================
+# 3) Summarize: mean ± SE by species × treatment × component
+#    (Mirror Root below zero for plotting)
+# ============================================================
+# --- Summarize means & SEs per component (LONG) ---
+# ---- 1) Summaries ----
+sum_long <- dat_biomass %>%
+  pivot_longer(c(Leaf, Stem, Root), names_to = "Component", values_to = "value") %>%
+  group_by(species, treatment, Component) %>%
+  summarise(
+    n    = sum(!is.na(value)),
+    mean = mean(value, na.rm = TRUE),
+    se   = ifelse(n > 1, sd(value, na.rm = TRUE)/sqrt(n), NA_real_),
+    .groups = "drop"
+  )
+
+sum_wide <- sum_long %>%
+  pivot_wider(names_from = Component, values_from = c(mean, se), names_sep = "_")
+# cols: mean_Leaf, se_Leaf, mean_Stem, se_Stem, mean_Root, se_Root
+
+# ---- 2) Helper to build one species plot ----
+build_species_plot <- function(sp) {
+  # Filter species
+  bars_sp <- sum_long %>% filter(species == sp)
+
+  # Positive stack: Stem (bottom) then Leaf (top)
+  pos_bars <- bars_sp %>%
+    filter(Component %in% c("Leaf", "Stem")) %>%
+    mutate(
+      Component = factor(Component, levels = c("Leaf","Stem")),  # order = bottom->top
+      y = mean
+    )
+
+  # Negative: Root mirrored
+  neg_bars <- bars_sp %>%
+    filter(Component == "Root") %>%
+    mutate(y = -mean)
+
+  # Error bars at true tops
+  eb_sp <- sum_wide %>% filter(species == sp) %>%
+    transmute(
+      species, treatment,
+      # tops
+      top_Stem =  mean_Stem,
+      top_Leaf =  mean_Stem + mean_Leaf,
+      top_Root = -mean_Root,
+      # ses
+      se_Stem  = se_Stem,
+      se_Leaf  = se_Leaf,
+      se_Root  = se_Root
+    ) %>%
+    pivot_longer(
+      cols = -c(species, treatment),
+      names_to = c(".value","Component"),
+      names_pattern = "(top|se)_(Leaf|Stem|Root)"
+    ) %>%
+    mutate(ymin = top - se,
+           ymax = top + se)
+
+  # Axis extent from real tops (incl. SE)
+  axis_extent <- max(abs(c(eb_sp$ymin, eb_sp$ymax)), na.rm = TRUE)
+
+  # Plot
+  ggplot() +
+    # Positive stack: Stem (bottom) then Leaf (top)
+    geom_col(data = pos_bars, aes(treatment, y, fill = Component),
+             width = 0.7, color = "black", linewidth = 0.25, position = "stack") +
+    # Negative mirrored Root
+    geom_col(data = neg_bars, aes(treatment, y, fill = Component),
+             width = 0.7, color = "black", linewidth = 0.25) +
+    # Error bars at tops
+    geom_errorbar(data = eb_sp,
+                  aes(treatment, ymin = ymin, ymax = ymax, group = Component),
+                  width = 0.18, linewidth = 0.25, na.rm = TRUE) +
+    geom_hline(yintercept = 0, linewidth = 0.3) +
+    scale_fill_manual(values = c(Leaf = "white", Stem = "grey60", Root = "grey10"),
+                      breaks = c("Leaf","Stem","Root"), name = NULL) +
+    scale_y_continuous(
+      limits = c(-1.10*axis_extent, 1.10*axis_extent),
+      breaks = scales::pretty_breaks(5),
+      labels = function(x) abs(x)  # show positives on both sides
+    ) +
+    labs(x = "Treatment", y = "Biomass (g)", title = sp) +
+    theme_classic(base_size = 12) +
+    theme(
+      legend.position = "right",
+      legend.background = element_rect(color = "black", fill = "white")
+    )
+}
+
+# ---- 3) Build the two panels ----
+p_LARA <- build_species_plot("LARA") + theme(legend.position = "none")
+p_LARA
+p_RHMA <- build_species_plot("RHMA")  # keep legend here
+p_RHMA
+
+# If you use patchwork:
+# library(patchwork)
+# p_LARA + p_RHMA + plot_layout(widths = c(1,1))
+
+```
+
+
+
+I got feedback from Kristin to remove hypocotyl from the above ground biomass to remove the site/ propagule effect.
+```{r}
+library(forcats)
+biomass <- biomass_data %>%
+  # compute components and totals
+  dplyr::mutate(
+    # Above-ground biomass = leaves + stem (+ hypocotyl for RHMA)
+    # AGB        = pmax(rowSums(dplyr::across(c(leaves, stem, hypocotyl)), na.rm = TRUE), 0), #run this code if you want to add hypocotyl back to the above-ground biomass
+    AGB        = pmax(rowSums(dplyr::across(c(leaves, stem)), na.rm = TRUE), 0),
+    FineRoot   = pmax(fine_roots   %||% 0, 0),
+    CoarseRoot = pmax(coarse_roots %||% 0, 0),
+    BGB_total  = FineRoot + CoarseRoot
+  ) %>%
+  # harmonize factor names/levels used in analysis
+  dplyr::mutate(
+    Species        = forcats::fct_relevel(toupper(species), "LARA","RHMA"),
+    Treatment_Name = forcats::fct_relevel(treatment, "Soil","Glass","25% SG","75% SG","100% SG")
+  ) %>%
+   # transformed responses for modeling (handles zeros)
+  # transformed responses + log-ratios
+  dplyr::mutate(
+    AGB_lp    = log1p(AGB),      # log(1 + AGB)
+    Fine_lp   = log1p(FineRoot),
+    Coarse_lp = log1p(CoarseRoot),
+    BGB_lp    = log1p(BGB_total),
+    # equals log((1+BGB)/(1+AGB)); don’t report this as “raw R:S”
+    logRS     = BGB_lp-AGB_lp,   # log root:shoot
+    logFC     = Fine_lp-Coarse_lp
+  )
+
+
+# Convenience split
+biomass_R <- filter(biomass, Species == "RHMA")
+biomass_L <- filter(biomass, Species == "LARA")
+
+# Helper to compute EMMeans letters (Holm-adjusted) and back-transform where needed
+letters_tbl <- function(fit, resp = c("AGB_lp","Fine_lp","Coarse_lp","logRS","logFC"), transform = c("exp1","identity")){
+  resp <- match.arg(resp)
+  transform <- match.arg(transform)
+  em <- emmeans(fit, ~ Treatment_Name)
+  # compact letter display with Holm
+  cl <- multcomp::cld(em, Letters = letters, adjust = "holm")
+  out <- as.data.frame(cl) %>%
+    rename(letters = .group) %>%
+    mutate(letters = trimws(letters))
+  # back-transform if requested
+  if(transform == "exp1"){
+    if(resp %in% c("AGB_lp","Fine_lp","Coarse_lp")){
+      out <- out %>% mutate(mean_bt = exp(emmean) - 1,
+                            lower_bt = exp(lower.CL) - 1,
+                            upper_bt = exp(upper.CL) - 1)
+    } else if(resp %in% c("logRS","logFC")){
+      # For log-ratios, exponentiate to ratio scale
+      out <- out %>% mutate(mean_bt = exp(emmean),
+                            lower_bt = exp(lower.CL),
+                            upper_bt = exp(upper.CL))
+    }
+  }
+  out
+}
+
+```
+
+Means by Component (AGB, Fine, Coarse)
+
+We analyze AGB, fine-root biomass, and coarse-root biomass separately per species with fixed effects models. Responses are log1p-transformed for normality and to accommodate zeros; we back-transform for presentation. Pairwise tests use Holm adjustment and letters for compact display.
+
+RHMA
+```{r}
+fit_agb_R    <- lm(AGB_lp   ~ Treatment_Name, data = biomass_R)
+fit_fine_R   <- lm(Fine_lp  ~ Treatment_Name, data = biomass_R)
+fit_coarse_R <- lm(Coarse_lp~ Treatment_Name, data = biomass_R)
+
+anova(fit_agb_R); anova(fit_fine_R); anova(fit_coarse_R)
+
+letters_agb_R    <- letters_tbl(fit_agb_R, resp="AGB_lp", transform="exp1")
+letters_fine_R   <- letters_tbl(fit_fine_R, resp="Fine_lp", transform="exp1")
+letters_coarse_R <- letters_tbl(fit_coarse_R, resp="Coarse_lp", transform="exp1")
+
+```
+
+```{r}
+plot_box_letters <- function(df, y, ylab){
+  ggplot(df, aes(Treatment_Name, .data[[y]], fill = Treatment_Name)) +
+    geom_jitter(aes(color = Treatment_Name), width = 0.15, alpha = 0.6, size = 2) +
+    geom_boxplot(alpha = 0.3, outlier.shape = NA, width = 0.6) +
+    stat_summary(fun = mean, geom = "point", shape = 18, size = 3, color = "black") +
+    scale_fill_manual(values = color_vals) + scale_color_manual(values = color_vals) +
+    labs(x = NULL, y = ylab) +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 15, hjust = 1))
+}
+
+p1 <- plot_box_letters(biomass_R, "AGB",       "Above-ground biomass (g)")
+p2 <- plot_box_letters(biomass_R, "FineRoot",  "Fine-root biomass (g)")
+p3 <- plot_box_letters(biomass_R, "CoarseRoot","Coarse-root biomass (g)")
+
+p1 / p2 / p3
+
+```
+
+```{r}
+letters_agb_R %>% dplyr::select(Treatment_Name, mean_bt, lower_bt, upper_bt, letters) %>% arrange(Treatment_Name)
+letters_fine_R %>% dplyr::select(Treatment_Name, mean_bt, lower_bt, upper_bt, letters) %>% arrange(Treatment_Name)
+letters_coarse_R %>% dplyr::select(Treatment_Name, mean_bt, lower_bt, upper_bt, letters) %>% arrange(Treatment_Name)
+
+```
+
+```{r}
+# pick y-positions a bit above the CI max per treatment
+pos_agb_R <- letters_agb_R %>%
+  mutate(y = pmax(upper_bt, 0) * 1.5)
+
+p1 +
+  geom_text(data = pos_agb_R,
+            aes(x = Treatment_Name, y = y, label = letters),
+            inherit.aes = FALSE, size = 4)
+
+pos_fine_R <- letters_fine_R %>% mutate(y = pmax(upper_bt, 0) * 1.5)
+pos_coarse_R <- letters_coarse_R %>% mutate(y = pmax(upper_bt, 0) * 1.5)
+
+fineR<- p2 + geom_text(data = pos_fine_R,
+                aes(Treatment_Name, y, label = letters),
+                inherit.aes = FALSE, size = 4)
+
+coarseR<- p3 + geom_text(data = pos_coarse_R,
+                aes(Treatment_Name, y, label = letters),
+                inherit.aes = FALSE, size = 4)
+fineR/coarseR
+```
+
+
+LARA
+```{r}
+fit_agb_L    <- lm(AGB_lp   ~ Treatment_Name, data = biomass_L)
+fit_fine_L   <- lm(Fine_lp  ~ Treatment_Name, data = biomass_L)
+fit_coarse_L <- lm(Coarse_lp~ Treatment_Name, data = biomass_L)
+
+anova(fit_agb_L); anova(fit_fine_L); anova(fit_coarse_L)
+
+letters_agb_L    <- letters_tbl(fit_agb_L, resp="AGB_lp", transform="exp1")
+letters_fine_L   <- letters_tbl(fit_fine_L, resp="Fine_lp", transform="exp1")
+letters_coarse_L <- letters_tbl(fit_coarse_L, resp="Coarse_lp", transform="exp1")
+
+```
+
+```{r}
+p1L <- plot_box_letters(biomass_L, "AGB",       "Above-ground biomass (g)")
+p2L <- plot_box_letters(biomass_L, "FineRoot",  "Fine-root biomass (g)")
+p3L <- plot_box_letters(biomass_L, "CoarseRoot","Coarse-root biomass (g)")
+p1L / p2L / p3L
+
+```
+
+```{r}
+letters_agb_L %>% dplyr::select(Treatment_Name, mean_bt, lower_bt, upper_bt, letters) %>% arrange(Treatment_Name)
+letters_fine_L %>% dplyr::select(Treatment_Name, mean_bt, lower_bt, upper_bt, letters) %>% arrange(Treatment_Name)
+letters_coarse_L %>% dplyr::select(Treatment_Name, mean_bt, lower_bt, upper_bt, letters) %>% arrange(Treatment_Name)
+
+```
+
+```{r}
+# pick y-positions a bit above the CI max per treatment
+pos_agb_L <- letters_agb_L %>%
+  mutate(y = pmax(upper_bt, 0) * 2.08)
+
+p1L +
+  geom_text(data = pos_agb_L,
+            aes(x = Treatment_Name, y = y, label = letters),
+            inherit.aes = FALSE, size = 4)
+
+pos_fine_L <- letters_fine_L %>% mutate(y = pmax(upper_bt, 0) * 2.08)
+pos_coarse_L <- letters_coarse_L %>% mutate(y = pmax(upper_bt, 0) * 2.08)
+
+fine<- p2L + geom_text(data = pos_fine_L,
+                aes(Treatment_Name, y, label = letters),
+                inherit.aes = FALSE, size = 4)
+
+coarse<- p3L + geom_text(data = pos_coarse_L,
+                aes(Treatment_Name, y, label = letters),
+                inherit.aes = FALSE, size = 4)
+fine/coarse
+```
+
+
+
+Allometric Coupling: Roots vs Shoots
+
+We evaluate whether substrates shift allocation at a given shoot size (intercept shift) or change scaling (slope).
+```{r}
+fit_allo_fine   <- lm(Fine_lp   ~ AGB_lp * Treatment_Name + Species, data = biomass)
+fit_allo_coarse <- lm(Coarse_lp ~ AGB_lp * Treatment_Name + Species, data = biomass)
+
+anova(fit_allo_fine)
+anova(fit_allo_coarse)
+
+# Effects (shifts at mean AGB)
+em_fine_shift   <- emmeans(fit_allo_fine,   ~ Treatment_Name | Species, cov.reduce = list(AGB_lp = mean))
+em_coarse_shift <- emmeans(fit_allo_coarse, ~ Treatment_Name | Species, cov.reduce = list(AGB_lp = mean))
+
+pairs(em_fine_shift,   adjust = "holm")
+pairs(em_coarse_shift, adjust = "holm")
+
+```
+
+Allometry plots (log scale)
+```{r}
+#this is the old version of the code for plots with the legend next to each one
+# plot_allometry <- function(df, y, ylab){
+#     ggplot(df, aes(AGB_lp, .data[[y]], color = Treatment_Name)) +
+#         geom_point(alpha = 0.6) +
+#         geom_smooth(method = "lm", se = FALSE) +
+#         scale_color_manual(values = color_vals) +
+#         labs(x = "log1p(AGB)", y = ylab, color = "Treatment") +
+#         theme(legend.position = "right")
+# }
+
+plot_allometry <- function(df, y, ylab){
+  ggplot(df, aes(AGB_lp, .data[[y]], color = Treatment_Name)) +
+    geom_point(alpha = 0.6) +
+    geom_smooth(method = "lm", se = FALSE) +
+    scale_color_manual(
+      values = color_vals,
+      name   = "Treatment",
+      breaks = names(color_vals)   # ensure identical order across plots
+    ) +
+    guides(color = guide_legend(nrow = 1, byrow = TRUE)) +  # one-row legend
+    labs(x = "log1p(AGB)", y = ylab) +
+    theme_classic() +
+    theme(legend.position = "right")
+}
+
+
+# Subset data by species
+rhma_data <- biomass %>% filter(Species == "RHMA")
+lara_data <- biomass %>% filter(Species == "LARA")
+
+# ---- R. mangle ----
+pA_RHMA <- plot_allometry(rhma_data, "Fine_lp",   "log1p(Fine root)")
+pB_RHMA <- plot_allometry(rhma_data, "Coarse_lp", "log1p(Coarse root)")
+
+# ---- L. racemosa ----
+pA_LARA <- plot_allometry(lara_data, "Fine_lp",   "log1p(Fine root)")
+pB_LARA <- plot_allometry(lara_data, "Coarse_lp", "log1p(Coarse root)")
+
+# # Optional: combine plots
+# library(patchwork)
+# (pA_RHMA | pB_RHMA) / (pA_LARA | pB_LARA) +
+#   plot_annotation(tag_levels = "A") &
+#   theme(plot.tag = element_text(face = "bold", size = 14))
+
+library(patchwork)
+
+combined_plot <-
+  (pA_LARA | pB_LARA) /
+  (pA_RHMA | pB_RHMA) +
+  plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(face = "bold", size = 14))
+
+combined_plot2<- combined_plot +
+  plot_layout(guides = "collect") &
+  theme(
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.box = "horizontal",
+    legend.title = element_text(face = "bold"),
+    legend.margin = margin(t = 2, r = 0, b = 2, l = 0)
+  )
+
+
+
+pA <- plot_allometry(biomass, "Fine_lp",   "log1p(Fine root)")
+pB <- plot_allometry(biomass, "Coarse_lp", "log1p(Coarse root)")
+pA + pB + plot_layout(guides = "collect")
+
+
+
+```
+
+Allocation as Log-Ratios (Root:Shoot and Fine:Coarse)
+
+Ratios are analyzed as differences of logs to stabilize variance; results are back-transformed for presentation.
+```{r}
+fit_logRS <- lm(logRS ~ Treatment_Name * Species, data = biomass)
+fit_logFC <- lm(logFC ~ Treatment_Name * Species, data = biomass)
+
+anova(fit_logRS); anova(fit_logFC)
+
+emRS <- emmeans(fit_logRS, ~ Treatment_Name | Species)
+emFC <- emmeans(fit_logFC, ~ Treatment_Name | Species)
+
+pairs(emRS, adjust = "holm")
+pairs(emFC, adjust = "holm")
+
+# Letters (per species), back-transform to ratio scale
+letters_RS_R <- letters_tbl(lm(logRS ~ Treatment_Name, data = biomass_R), resp="logRS", transform="exp1")
+letters_RS_L <- letters_tbl(lm(logRS ~ Treatment_Name, data = biomass_L), resp="logRS", transform="exp1")
+letters_FC_R <- letters_tbl(lm(logFC ~ Treatment_Name, data = biomass_R), resp="logFC", transform="exp1")
+letters_FC_L <- letters_tbl(lm(logFC ~ Treatment_Name, data = biomass_L), resp="logFC", transform="exp1")
+
+```
+
+Figures: Back-transformed ratios with letters
+```{r}
+plot_ratio_letters <- function(letters_df, title, ylab){
+  letters_df %>%
+    ggplot(aes(Treatment_Name, mean_bt)) +
+    geom_point(size = 3) +
+    geom_errorbar(aes(ymin = lower_bt, ymax = upper_bt), width = 0.15) +
+    geom_text(aes(label = letters, y = upper_bt*1.05), vjust = 0.25, size = 4) +
+    labs(x = NULL, y = ylab, title = title) +
+    theme(axis.text.x = element_text(angle = 15, hjust = 1))
+}
+
+(p_RS_R <- plot_ratio_letters(letters_RS_R, "RHMA — Root:Shoot (back-transformed)", "Root:Shoot ratio"))
+(p_RS_L <- plot_ratio_letters(letters_RS_L, "LARA — Root:Shoot (back-transformed)", "Root:Shoot ratio"))
+(p_FC_R <- plot_ratio_letters(letters_FC_R, "RHMA — Fine:Coarse (back-transformed)", "Fine:Coarse ratio"))
+(p_FC_L <- plot_ratio_letters(letters_FC_L, "LARA — Fine:Coarse (back-transformed)", "Fine:Coarse ratio"))
+
+p_RS_L/p_RS_R
+p_FC_L/p_FC_R
+
+```
+
+Model Diagnostics (brief)
+```{r}
+check_model <- function(fit){
+  list(
+    check_model = performance::check_model(fit),
+    r2          = performance::r2(fit)
+  )
+}
+
+diag_list <- list(
+  agb_R    = check_model(fit_agb_R),
+  fine_R   = check_model(fit_fine_R),
+  coarse_R = check_model(fit_coarse_R),
+  agb_L    = check_model(fit_agb_L),
+  fine_L   = check_model(fit_fine_L),
+  coarse_L = check_model(fit_coarse_L),
+  allo_fine   = check_model(fit_allo_fine),
+  allo_coarse = check_model(fit_allo_coarse),
+  logRS = check_model(fit_logRS),
+  logFC = check_model(fit_logFC)
+)
+diag_list$r2
+
+```
+
+Tables for Manuscript
+6.1 Estimated means (back-transformed) with Holm letters
+```{r}
+fmt_letters <- function(df, digits = 2){
+  df %>%
+    transmute(
+      Treatment = Treatment_Name,
+      Mean = round(mean_bt, digits),
+      `95% CI` = sprintf("[%s, %s]", round(lower_bt, digits), round(upper_bt, digits)),
+      Letters = letters
+    )
+}
+
+list(
+  RHMA_AGB    = fmt_letters(letters_agb_R),
+  RHMA_Fine   = fmt_letters(letters_fine_R),
+  RHMA_Coarse = fmt_letters(letters_coarse_R),
+  LARA_AGB    = fmt_letters(letters_agb_L),
+  LARA_Fine   = fmt_letters(letters_fine_L),
+  LARA_Coarse = fmt_letters(letters_coarse_L),
+  RHMA_RootShoot = fmt_letters(letters_RS_R),
+  LARA_RootShoot = fmt_letters(letters_RS_L),
+  RHMA_FineCoarse = fmt_letters(letters_FC_R),
+  LARA_FineCoarse = fmt_letters(letters_FC_L)
+)
+
+```
+
+Pairwise contrasts (Holm)
+```{r}
+contrasts_agb_R    <- pairs(emmeans(fit_agb_R,    ~ Treatment_Name), adjust="holm") %>% broom::tidy()
+contrasts_fine_R   <- pairs(emmeans(fit_fine_R,   ~ Treatment_Name), adjust="holm") %>% broom::tidy()
+contrasts_coarse_R <- pairs(emmeans(fit_coarse_R, ~ Treatment_Name), adjust="holm") %>% broom::tidy()
+
+contrasts_agb_L    <- pairs(emmeans(fit_agb_L,    ~ Treatment_Name), adjust="holm") %>% broom::tidy()
+contrasts_fine_L   <- pairs(emmeans(fit_fine_L,   ~ Treatment_Name), adjust="holm") %>% broom::tidy()
+contrasts_coarse_L <- pairs(emmeans(fit_coarse_L, ~ Treatment_Name), adjust="holm") %>% broom::tidy()
+
+contrasts_RS <- pairs(emRS, adjust="holm") %>% broom::tidy()
+contrasts_FC <- pairs(emFC, adjust="holm") %>% broom::tidy()
+
+list(
+  RHMA_AGB    = contrasts_agb_R,
+  RHMA_Fine   = contrasts_fine_R,
+  RHMA_Coarse = contrasts_coarse_R,
+  LARA_AGB    = contrasts_agb_L,
+  LARA_Fine   = contrasts_fine_L,
+  LARA_Coarse = contrasts_coarse_L,
+  RootShoot   = contrasts_RS,
+  FineCoarse  = contrasts_FC
+)
+
+```
+
+Figure Caption Templates (edit in manuscript)
+
+Figure X. RHMA biomass by substrate. Above-ground (AGB), fine-root, and coarse-root biomass for Rhizophora mangle. Points show individuals, boxes show distribution; black diamonds mark means. Letters denote Holm-adjusted groups from linear mixed-effects models on log1p-transformed responses with a random Site effect; values are back-transformed for interpretation.
+
+Figure Y. LARA biomass by substrate. As in Fig. X for Laguncularia racemosa.
+
+Figure Z. Root–shoot allometry by substrate. log1p(root component) vs log1p(AGB) with per-treatment regression lines; vertical shifts indicate allocation differences at a common shoot size, and slope differences indicate size-dependent scaling. Tests from mixed-effects models including Species and a random Site intercept.
+
+Figure W. Allocation ratios. Back-transformed root:shoot and fine:coarse mean ratios (±95% CI) by substrate, with Holm letters from mixed-effects models on log-ratios.
+
+
+
