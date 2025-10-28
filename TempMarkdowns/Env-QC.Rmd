@@ -28,6 +28,7 @@ suppressPackageStartupMessages({
   library(FSA)
   library(rcompanion)
   library(multcompView)
+  library(rstatix)
 })
 
 # Create output dirs
@@ -40,10 +41,10 @@ dir.create(params$tables_dir, showWarnings = FALSE, recursive = TRUE)
 ```{r aesthetics-helpers}
 # Okabe–Ito palette and shapes (colorblind-friendly)
 okabe_ito <- c("#009E73", "#D55E00", "#E69F00", "#56B4E9", "#F0E442", "#0072B2", "#CC79A7", "#999999")
-shape_vals <- c("Soil" = 0, "Crushed glass" = 17, "25% SG" = 18, "75% SG" = 8, "100% SG" = 15)
-color_vals <- c("Soil" = okabe_ito[1], "Crushed glass" = okabe_ito[6],
+shape_vals <- c("Soil" = 0, "Glass" = 17, "25% SG" = 18, "75% SG" = 8, "100% SG" = 15)
+color_vals <- c("Soil" = okabe_ito[1], "Glass" = okabe_ito[6],
                 "25% SG" = okabe_ito[3], "75% SG" = okabe_ito[2], "100% SG" = okabe_ito[7])
-treat_order <- c("Soil", "Crushed glass", "25% SG", "75% SG", "100% SG")
+treat_order <- c("Soil", "Glass", "25% SG", "75% SG", "100% SG")
 
 # Prepare environmental data
 prep_env <- function(path, value_label) {
@@ -68,15 +69,15 @@ prep_env <- function(path, value_label) {
   df |>
     dplyr::mutate(
       treatment   = dplyr::recode(as.character(treatment),
-                                  A = "Soil", B = "Crushed glass", C = "100% SG",
+                                  A = "Soil", B = "Glass", C = "100% SG",
                                   D = "25% SG", E = "75% SG"),
       treatment   = factor(treatment,
-                           levels = c("Soil", "Crushed glass", "25% SG", "75% SG", "100% SG"),
+                           levels = c("Soil", "Glass", "25% SG", "75% SG", "100% SG"),
                            ordered = TRUE),
       tank_number = suppressWarnings(as.integer(tank_number)),
-      Average     = avg_vec
+      average     = avg_vec
     ) |>
-    dplyr::select(sampling_date_mm_dd_yyyy, time, tank_number, treatment, Average) |>
+    dplyr::select(sampling_date_mm_dd_yyyy, time, tank_number, treatment, average) |>
     dplyr::mutate(variable = value_label)
 }
 
@@ -84,19 +85,19 @@ prep_env <- function(path, value_label) {
 pos_for_letters <- function(dat, letters_df, y_offset = 1.0) {
   max_vals <- dat |> 
     group_by(treatment) |> 
-    summarise(y = max(Average, na.rm = TRUE), .groups = "drop")
+    summarise(y = max(average, na.rm = TRUE), .groups = "drop")
   
   letters_df |> 
     rename(Letter = Letter) |> 
-    mutate(Treatment = factor(Treatment, levels = treat_order, ordered = TRUE)) |> 
-    select(treatment = Treatment, Letter) |> 
+    mutate(treatment = factor(Treatment, levels = treat_order, ordered = TRUE)) |> 
+    select(treatment = treatment, Letter) |> 
     right_join(max_vals, by = "treatment") |> 
     mutate(y = y + y_offset)
 }
 
 # Plot function
-plot_box <- function(dat, pos_df, title_txt, ylab_txt, file_stub) {
-  p <- ggplot(dat, aes(x = treatment, y = Average, fill = treatment, shape = treatment)) +
+plot_box <- function(dat, pos_df, ylab_txt, file_stub) { #title_txt,
+  p <- ggplot(dat, aes(x = treatment, y = average, fill = treatment, shape = treatment)) +
     geom_boxplot(alpha = 0.85, color = "black", outlier.shape = 21, outlier.fill = "white") +
     geom_jitter(width = 0.15, alpha = 0.35, size = 1.6) +
     # geom_text(data = pos_df, aes(x = treatment, y = y, label = Letter),
@@ -104,7 +105,7 @@ plot_box <- function(dat, pos_df, title_txt, ylab_txt, file_stub) {
     scale_fill_manual(values = color_vals, drop = FALSE) +
     scale_shape_manual(values = shape_vals, drop = FALSE) +
     scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
-    labs(title = title_txt, x = "Treatment", y = ylab_txt) +
+    labs(x = "Treatment", y = ylab_txt) + #title = title_txt,
     theme_minimal(base_size = 14) +
     theme(legend.position = "none", panel.grid.minor = element_blank())
   
@@ -154,7 +155,7 @@ sal  <- prep_env(params$sal_path,  "Salinity (ppt)")
 # Test normality of residuals using Shapiro-Wilk
 # This informs whether we should use parametric (ANOVA) or non-parametric (Kruskal-Wallis) tests
 shapiro_block <- function(dat) {
-  fit <- aov(Average ~ treatment, data = dat)
+  fit <- aov(average ~ treatment, data = dat)
   sw <- shapiro.test(residuals(fit))
   tibble(W = unname(sw$statistic), p = sw$p.value)
 }
@@ -178,8 +179,8 @@ sample_sizes <- bind_rows(
 
 # Use Kruskal-Wallis test (non-parametric alternative to one-way ANOVA)
 # Appropriate when normality assumptions are not met or data is ordinal
-kw_temp <- kruskal.test(Average ~ treatment, data = temp)
-kw_sal  <- kruskal.test(Average ~ treatment, data = sal)
+kw_temp <- kruskal.test(average ~ treatment, data = temp)
+kw_sal  <- kruskal.test(average ~ treatment, data = sal)
 
 kw_df <- tibble(
   variable = c("Temperature (°C)", "Salinity (ppt)"),
@@ -190,16 +191,16 @@ kw_df <- tibble(
 
 # Create plain factor copies for Dunn tests (avoid ordered factors which can cause issues with FSA)
 temp_dunn <- temp |>
-  dplyr::filter(!is.na(Average), !is.na(treatment)) |>
+  dplyr::filter(!is.na(average), !is.na(treatment)) |>
   dplyr::mutate(treat_unord = factor(as.character(treatment)))
 
 sal_dunn <- sal |>
-  dplyr::filter(!is.na(Average), !is.na(treatment)) |>
+  dplyr::filter(!is.na(average), !is.na(treatment)) |>
   dplyr::mutate(treat_unord = factor(as.character(treatment)))
 
 # Post-hoc pairwise comparisons using Dunn's test with Bonferroni correction
-dunn_T <- FSA::dunnTest(Average ~ treat_unord, data = temp_dunn, method = "bonferroni")$res
-dunn_S <- FSA::dunnTest(Average ~ treat_unord, data = sal_dunn,  method = "bonferroni")$res
+dunn_T <- FSA::dunnTest(average ~ treat_unord, data = temp_dunn, method = "bonferroni")$res
+dunn_S <- FSA::dunnTest(average ~ treat_unord, data = sal_dunn,  method = "bonferroni")$res
 
 # Generate compact letter display (CLD) for visualization
 cld_T <- cldList(P.adj ~ Comparison, data = dunn_T, threshold = 0.05) |> 
@@ -236,12 +237,12 @@ I think this section isn't required since I already tested for treatment by sali
 ## 3b) Tank-level tests for Temperature and Salinity
 ```{r tank-effects}
 # Treat tank number as factor (unordered)
-temp_tank <- temp |> filter(!is.na(Average)) |> mutate(tank_f = factor(tank_number))
-sal_tank  <- sal  |> filter(!is.na(Average)) |> mutate(tank_f = factor(tank_number))
+temp_tank <- temp |> filter(!is.na(average)) |> mutate(tank_f = factor(tank_number))
+sal_tank  <- sal  |> filter(!is.na(average)) |> mutate(tank_f = factor(tank_number))
 
 # --- Kruskal–Wallis by tank ---
-kw_temp_tank <- kruskal.test(Average ~ tank_f, data = temp_tank)
-kw_sal_tank  <- kruskal.test(Average ~ tank_f, data = sal_tank)
+kw_temp_tank <- kruskal.test(average ~ tank_f, data = temp_tank)
+kw_sal_tank  <- kruskal.test(average ~ tank_f, data = sal_tank)
 
 tank_kw_df <- tibble(
   variable = c("Temperature (°C)", "Salinity (ppt)"),
@@ -254,14 +255,14 @@ tank_kw_df
 
 # --- Optional post hoc Dunn tests (only if significant) ---
 if (kw_temp_tank$p.value < 0.05) {
-  dunn_temp_tank <- FSA::dunnTest(Average ~ tank_f, data = temp_tank, method = "bonferroni")$res
+  dunn_temp_tank <- FSA::dunnTest(average ~ tank_f, data = temp_tank, method = "bonferroni")$res
   write_csv(dunn_temp_tank, file.path(params$tables_dir, "tank_dunn_temperature.csv"))
 } else {
   message("No significant tank effect detected for temperature.")
 }
 
 if (kw_sal_tank$p.value < 0.05) {
-  dunn_sal_tank <- FSA::dunnTest(Average ~ tank_f, data = sal_tank, method = "bonferroni")$res
+  dunn_sal_tank <- FSA::dunnTest(average ~ tank_f, data = sal_tank, method = "bonferroni")$res
   write_csv(dunn_sal_tank, file.path(params$tables_dir, "tank_dunn_salinity.csv"))
 } else {
   message("No significant tank effect detected for salinity.")
@@ -340,8 +341,8 @@ readr::write_csv(tank_interpret_tbl, file.path(params$tables_dir, "env_tank_inte
 suppressPackageStartupMessages(library(lme4))
 
 # Fit models
-mod_temp_noTank <- lm(Average ~ treatment, data = temp)
-mod_temp_Tank   <- lmer(Average ~ treatment + (1 | tank_number), data = temp, REML = FALSE)
+mod_temp_noTank <- lm(average ~ treatment, data = temp)
+mod_temp_Tank   <- lmer(average ~ treatment + (1 | tank_number), data = temp, REML = FALSE)
 
 # Compute log-likelihoods and LRT
 LL_noTank <- logLik(mod_temp_noTank)
@@ -361,8 +362,8 @@ cat("Likelihood-ratio test: χ²(", df_diff, ") = ",
 pos_T <- pos_for_letters(temp, cld_T)
 pos_S <- pos_for_letters(sal,  cld_S)
 
-p_temp <- plot_box(temp, pos_T, "Tank Water Temperature by Treatment", "Temperature (°C)", "temperature_by_treatment")
-p_sal  <- plot_box(sal, pos_S, "Tank Water Salinity by Treatment", "Salinity (ppt)", "salinity_by_treatment")
+p_temp <- plot_box(temp, pos_T, "Temperature (°C)", "temperature_by_treatment") #"Tank Water Temperature by Treatment",
+p_sal  <- plot_box(sal, pos_S, "Salinity (ppt)", "salinity_by_treatment") #"Tank Water Salinity by Treatment",
 
 cap_T <- build_caption("Temperature (°C)", kw_df, cld_T)
 cap_S <- build_caption("Salinity (ppt)",   kw_df, cld_S)
@@ -386,12 +387,12 @@ suppressPackageStartupMessages(library(lubridate))
 summarize_env_time <- function(dat) {
   dat %>%
     mutate(Date = mdy(sampling_date_mm_dd_yyyy)) %>%
-    filter(!is.na(Date), !is.na(Average), !is.na(treatment)) %>%
+    filter(!is.na(Date), !is.na(average), !is.na(treatment)) %>%
     group_by(Date, treatment) %>%
     summarise(
       n   = n(),
-      mean = mean(Average, na.rm = TRUE),
-      se   = sd(Average, na.rm = TRUE) / sqrt(n),
+      mean = mean(average, na.rm = TRUE),
+      se   = sd(average, na.rm = TRUE) / sqrt(n),
       .groups = "drop"
     ) %>%
     arrange(Date, treatment)
@@ -405,7 +406,7 @@ readr::write_csv(temp_time, file.path(params$tables_dir, "temperature_time_summa
 readr::write_csv(sal_time,  file.path(params$tables_dir, "salinity_time_summary.csv"))
 
 # Line-plot helper (consistent with your colors/shapes)
-plot_time_lines <- function(summ_df, title_txt, ylab_txt, file_stub) {
+plot_time_lines <- function(summ_df, ylab_txt, file_stub) { #title_txt
   p <- ggplot(summ_df, aes(x = Date, y = mean, color = treatment, group = treatment)) +
     geom_line(linewidth = 1) +
     geom_point(aes(shape = treatment), size = 2) +
@@ -413,7 +414,7 @@ plot_time_lines <- function(summ_df, title_txt, ylab_txt, file_stub) {
     scale_color_manual(values = color_vals, drop = FALSE) +
     scale_shape_manual(values = shape_vals, drop = FALSE) +
     scale_x_date(date_breaks = "2 weeks", date_labels = "%b %d") +
-    labs(title = title_txt, x = "Date", y = ylab_txt, color = "Treatment", shape = "Treatment") +
+    labs(x = "Date", y = ylab_txt, color = "Treatment", shape = "Treatment") + # title = title_txt
     theme_minimal(base_size = 14) +
     theme(
       legend.position = "bottom",
@@ -433,8 +434,8 @@ plot_time_lines <- function(summ_df, title_txt, ylab_txt, file_stub) {
 }
 
 # Build the time-series figures
-p_temp_time <- plot_time_lines(temp_time, "Mean Temperature Over Time by Treatment", "Temperature (°C)", "temperature_time_series")
-p_sal_time  <- plot_time_lines(sal_time,  "Mean Salinity Over Time by Treatment",    "Salinity (ppt)",  "salinity_time_series")
+p_temp_time <- plot_time_lines(temp_time, "Temperature (°C)", "temperature_time_series") #"Mean Temperature Over Time by Treatment"
+p_sal_time  <- plot_time_lines(sal_time, "Salinity (ppt)",  "salinity_time_series") #"Mean Salinity Over Time by Treatment",
 
 # Print to document
 p_temp_time
@@ -467,6 +468,134 @@ ggsave(file.path(params$out_dir, "salinity_panels.pdf"),
 fig_temp_combined
 fig_sal_combined
 ```
+
+```{r}
+## Final-day mean temperature across tanks ----
+suppressPackageStartupMessages(library(lubridate))
+
+# Add a Date column from the mm/dd/yyyy field
+temp_final <- temp %>%
+  mutate(Date = mdy(sampling_date_mm_dd_yyyy)) %>%
+  filter(!is.na(Date), !is.na(average))
+
+# Identify the last monitoring date with valid temperature data
+final_date <- max(temp_final$Date, na.rm = TRUE)
+cat("Final monitoring date:", format(final_date, "%Y-%m-%d"), "\n")
+
+# 1) Overall mean across ALL tanks (ignoring treatment) on the final date
+final_overall <- temp_final %>%
+  filter(Date == final_date) %>%
+  summarise(
+    n_tanks = dplyr::n_distinct(tank_number),
+    n_rows  = dplyr::n(),
+    mean_final_temp = mean(average, na.rm = TRUE),
+    se_final_temp   = sd(average, na.rm = TRUE) / sqrt(n_rows)
+  )
+
+final_overall
+
+# 2) By-treatment mean across tanks on the final date
+final_by_treatment <- temp_final %>%
+  filter(Date == final_date) %>%
+  group_by(treatment) %>%
+  summarise(
+    n_tanks = dplyr::n_distinct(tank_number),
+    n_rows  = dplyr::n(),
+    mean_final_temp = mean(average, na.rm = TRUE),
+    se_final_temp   = sd(average, na.rm = TRUE) / sqrt(n_rows),
+    .groups = "drop"
+  ) %>%
+  arrange(treatment)
+
+final_by_treatment
+
+# 3) (Optional) Per-tank means on the final date (useful for QC)
+final_by_tank <- temp_final %>%
+  filter(Date == final_date) %>%
+  group_by(tank_number, treatment) %>%
+  summarise(
+    n_rows = dplyr::n(),
+    mean_final_temp = mean(average, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(tank_number)
+
+head(final_by_tank, 20)
+
+# Save results
+readr::write_csv(final_overall,        file.path(params$tables_dir, "final_temperature_overall.csv"))
+readr::write_csv(final_by_treatment,   file.path(params$tables_dir, "final_temperature_by_treatment.csv"))
+readr::write_csv(final_by_tank,        file.path(params$tables_dir, "final_temperature_by_tank.csv"))
+```
+
+```{r}
+## Final-day mean salinity across tanks ----
+suppressPackageStartupMessages(library(lubridate))
+
+# Build clean salinity table with Date
+sal_final <- sal %>%
+  mutate(Date = mdy(sampling_date_mm_dd_yyyy)) %>%
+  filter(!is.na(Date), !is.na(average))
+
+# Salinity's own last available date
+sal_last_date <- max(sal_final$Date, na.rm = TRUE)
+
+# Use the temperature-based final_date if it exists; otherwise use sal_last_date
+if (!exists("final_date")) final_date <- sal_last_date
+
+# If no salinity data exist on final_date, fall back to sal_last_date
+use_date_sal <- if (any(sal_final$Date == final_date)) final_date else sal_last_date
+cat("Final salinity date used:", format(use_date_sal, "%Y-%m-%d"),
+    ifelse(use_date_sal != final_date, " (no salinity on temp final date; using sal's last date)\n", "\n"))
+
+# 1) Overall mean across ALL tanks
+sal_overall <- sal_final %>%
+  filter(Date == use_date_sal) %>%
+  summarise(
+    n_tanks          = dplyr::n_distinct(tank_number),
+    n_rows           = dplyr::n(),
+    mean_final_sal   = mean(average, na.rm = TRUE),
+    se_final_sal     = sd(average,   na.rm = TRUE) / sqrt(n_rows)
+  )
+
+sal_overall
+
+# 2) By-treatment mean across tanks
+sal_by_treatment <- sal_final %>%
+  filter(Date == use_date_sal) %>%
+  group_by(treatment) %>%
+  summarise(
+    n_tanks        = dplyr::n_distinct(tank_number),
+    n_rows         = dplyr::n(),
+    mean_final_sal = mean(average, na.rm = TRUE),
+    se_final_sal   = sd(average,   na.rm = TRUE) / sqrt(n_rows),
+    .groups = "drop"
+  ) %>%
+  arrange(treatment)
+
+sal_by_treatment
+
+# 3) Per-tank means (QC)
+sal_by_tank <- sal_final %>%
+  filter(Date == use_date_sal) %>%
+  group_by(tank_number, treatment) %>%
+  summarise(
+    n_rows         = dplyr::n(),
+    mean_final_sal = mean(average, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(tank_number)
+
+head(sal_by_tank, 20)
+
+# Save results
+readr::write_csv(sal_overall,      file.path(params$tables_dir, "final_salinity_overall.csv"))
+readr::write_csv(sal_by_treatment, file.path(params$tables_dir, "final_salinity_by_treatment.csv"))
+readr::write_csv(sal_by_tank,      file.path(params$tables_dir, "final_salinity_by_tank.csv"))
+
+```
+
+
 ---
 
 ✅ **What this gives you:**
@@ -474,7 +603,4 @@ fig_sal_combined
 * Clean plots (Okabe–Ito colors + significance letters) saved to `env_figs/`.
 * CSVs with KW, Dunn, CLDs, and captions saved to `env_tables/`.
 * Captions automatically generated for direct copy-paste into your results section.
-
-Would you like me to also include a **small methods paragraph** (e.g. “Temperature and salinity were compared across treatments using Kruskal–Wallis…”) that you can paste into your Methods chapter?
-
 
